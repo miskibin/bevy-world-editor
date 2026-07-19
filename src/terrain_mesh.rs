@@ -174,25 +174,66 @@ fn build_water_chunk(
     let mut uv1: Vec<[f32; 2]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
+    // Highest lake surface among a cell and its 8 neighbours — lets the sheet extend one
+    // ring PAST the flagged cells, so the shader's depth-driven alpha fade reaches zero
+    // smoothly instead of chopping off in axis-aligned cell steps (the "blocky shore").
+    let surf_near = |x: usize, z: usize| -> f32 {
+        let mut best = f32::NEG_INFINITY;
+        for dz in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let nx = x as i32 + dx;
+                let nz = z as i32 + dz;
+                if nx >= 0 && nz >= 0 && (nx as usize) < size && (nz as usize) < size {
+                    best = best.max(w.water[nz as usize * size + nx as usize]);
+                }
+            }
+        }
+        best
+    };
+    // Per-CORNER shore distance (average of the 4 touching cells, dry = 0) — a per-cell
+    // constant here is what painted the foam as zigzag cell blocks.
+    let corner_shore = |gx: usize, gz: usize| -> f32 {
+        let mut sum = 0.0f32;
+        let mut n = 0.0f32;
+        for (cx, cz) in [
+            (gx.wrapping_sub(1), gz.wrapping_sub(1)),
+            (gx, gz.wrapping_sub(1)),
+            (gx.wrapping_sub(1), gz),
+            (gx, gz),
+        ] {
+            if cx < size && cz < size {
+                let i = cz * size + cx;
+                sum += if w.water[i].is_finite() { shore[i].min(12.0) } else { 0.0 };
+                n += 1.0;
+            }
+        }
+        sum / n.max(1.0)
+    };
+
     for z in z0..(z0 + CHUNK).min(size - 1) {
         for x in x0..(x0 + CHUNK).min(size - 1) {
-            let i = z * size + x;
-            let surf = w.water[i];
+            let surf = surf_near(x, z);
             if !surf.is_finite() {
                 continue;
             }
-            let sd = shore[i].min(12.0);
+            // Skip cells fully above the sheet (ring cells on rising ground).
+            let submerged = [(x, z), (x + 1, z), (x, z + 1), (x + 1, z + 1)]
+                .into_iter()
+                .any(|(gx, gz)| surf - hf.get(gx, gz) > 0.0);
+            if !submerged {
+                continue;
+            }
             let base = positions.len() as u32;
             for (dx, dz) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
                 let gx = x + dx;
                 let gz = z + dz;
                 let wx = gx as f32 * hf.cell + off;
                 let wz = gz as f32 * hf.cell + off;
-                let depth = (surf - hf.get(gx, gz)).max(0.02);
+                let depth = (surf - hf.get(gx, gz)).max(0.0);
                 positions.push([wx, surf, wz]);
                 normals.push([0.0, 1.0, 0.0]);
                 uv0.push([wx, wz]);
-                uv1.push([depth, sd]);
+                uv1.push([depth, corner_shore(gx, gz)]);
             }
             indices.extend_from_slice(&[base, base + 2, base + 1, base + 1, base + 2, base + 3]);
         }

@@ -8,7 +8,7 @@ edition = "2024"
 
 [dependencies]
 worldgen = { path = "crates/worldgen" }
-bevy = "0.19"
+bevy = { version = "0.19", features = ["mp3"] }
 bevy_egui = "0.41"
 # pinned to Bevy's wgpu major so RenderAdapterInfo::device_type unifies (quality autodetect)
 wgpu = { version = "29", default-features = false }

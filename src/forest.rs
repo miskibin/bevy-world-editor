@@ -25,7 +25,8 @@ const LOD2_END: f32 = 480.0;
 const LOD_BAND: f32 = 18.0;
 /// Chunks fully inside this radius get individual trees.
 const NEAR_RADIUS: f32 = LOD2_END + 90.0;
-const FAR_CULL: f32 = 1500.0;
+/// Merged-LOD2 tier hands off to the ultra billboards here.
+const ULTRA_START: f32 = 900.0;
 
 pub struct ForestPlugin;
 
@@ -78,37 +79,46 @@ fn rebuild_on_ready(
         index.chunks.entry(chunk_key(t.x, t.z)).or_default().push(t);
     }
 
-    // Far field: one merged LOD2 mesh per chunk (single material, one draw each).
+    // Far field, two merged tiers per chunk: LOD2 impostors (480–900 m), then crossed
+    // billboards (4 tris/tree) from 900 m to INFINITY — the horizon never pops empty.
     for (key, trees) in &index.chunks {
         let mut merged = MeshData::default();
+        let mut ultra = MeshData::default();
         for t in trees {
             let vm = &assets.variants[species_index(t.species)][t.variant as usize];
-            merged.append_transformed(
-                &vm.lod2_data,
-                Vec3::new(t.x, t.y - 0.25 * t.scale, t.z),
-                t.yaw,
-                t.scale,
-            );
+            let pos = Vec3::new(t.x, t.y - 0.25 * t.scale, t.z);
+            merged.append_transformed(&vm.lod2_data, pos, t.yaw, t.scale);
+            ultra.append_transformed(&vm.billboard_data, pos, t.yaw, t.scale);
         }
         if merged.positions.is_empty() {
             continue;
         }
-        let mesh = merged.to_mesh();
-        let aabb = mesh.compute_aabb();
-        let mut e = commands.spawn((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(assets.leaf_mat.clone()),
-            Transform::default(),
-            WorldEntity,
-            NotShadowCaster,
-            VisibilityRange {
-                start_margin: LOD2_END..LOD2_END + LOD_BAND,
-                end_margin: FAR_CULL..FAR_CULL + 200.0,
-                use_aabb: true,
-            },
-        ));
-        if let Some(aabb) = aabb {
-            e.insert(aabb);
+        for (data, start, end) in [
+            (&merged, LOD2_END, ULTRA_START),
+            (&ultra, ULTRA_START, f32::INFINITY),
+        ] {
+            let mesh = data.to_mesh();
+            let aabb = mesh.compute_aabb();
+            let end_margin = if end.is_finite() {
+                end..end + LOD_BAND
+            } else {
+                1.0e30..1.0e30
+            };
+            let mut e = commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(assets.leaf_mat.clone()),
+                Transform::default(),
+                WorldEntity,
+                NotShadowCaster,
+                VisibilityRange {
+                    start_margin: start..start + LOD_BAND,
+                    end_margin,
+                    use_aabb: true,
+                },
+            ));
+            if let Some(aabb) = aabb {
+                e.insert(aabb);
+            }
         }
         let _ = key;
     }

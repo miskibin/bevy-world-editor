@@ -266,6 +266,34 @@ pub struct VariantMeshes {
     pub lod2: Handle<Mesh>,
     /// CPU copy of the LOD2 mesh — the far-field per-chunk merge source.
     pub lod2_data: MeshData,
+    /// Ultra-far billboard: 2 crossed quads (4 tris) — "practically 2D" horizon tier.
+    pub billboard_data: MeshData,
+}
+
+/// Whole-tree crossed billboard: two quads, tree-height tall, canopy-width wide,
+/// sampling the species' full sprig texture. Only ever seen merged, from ~1 km out.
+fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
+    let mut md = MeshData::default();
+    let (u0, v0, u1, v1) = foliage::leaf_uv(sp);
+    let w = (sk.canopy_radius * 1.6).max(2.0);
+    let h = sk.height.max(4.0);
+    let col = [tint[0] * 0.92, tint[1] * 0.92, tint[2] * 0.88, 1.0];
+    for axis in [Vec3::X, Vec3::Z] {
+        let base = md.positions.len() as u32;
+        for (s, y, uu, vv) in [
+            (-0.5f32, 0.0f32, u0, v1),
+            (0.5, 0.0, u1, v1),
+            (0.5, 1.0, u1, v0),
+            (-0.5, 1.0, u0, v0),
+        ] {
+            md.positions.push((axis * s * w + Vec3::Y * y * h).to_array());
+            md.normals.push([0.0, 1.0, 0.0]); // sky-lit — reads as diffuse haze mass far off
+            md.uvs.push([uu, vv]);
+            md.colors.push(col);
+        }
+        md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    md
 }
 
 #[derive(Resource)]
@@ -368,6 +396,7 @@ fn build_tree_assets(
                 lod1_leaf: meshes.add(build_sprigs(&sk, sp, 2, 1.45, false, ft).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
+                billboard_data: build_billboard(&sk, sp, ft),
             });
         }
         variants.push(per_variant);

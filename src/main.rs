@@ -4,6 +4,7 @@
 //! turn them into a rendered world. Env hooks: `WED_SEED`, `WED_CAM="x,y,z,tx,ty,tz"`,
 //! `WED_SHOT=path.png` (+`WED_SHOT_WARMUP`).
 
+mod ambience;
 mod capture;
 mod flycam;
 mod foliage;
@@ -43,6 +44,7 @@ fn main() {
             ui::UiPlugin,                 // egui parameter panel
             capture::CapturePlugin,       // WED_SHOT harness
             lodline::LodLinePlugin,       // WED_LODLINE model-review grid
+            ambience::AmbiencePlugin,     // birds/water/wind ambient loops
         ))
         .run();
 }

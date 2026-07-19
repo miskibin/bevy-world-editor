@@ -122,18 +122,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         * pow(max(dot(n, hvec), 0.0), water.sun_glint.w)
         * max(water.sun_dir.y, 0.0);
 
-    // Shore foam: noisy band within ~1.5 m of land + thin contact line.
-    let band = 1.0 - smoothstep(0.0, 1.5, shore);
+    // Shore foam: contact line driven by CONTINUOUS depth (per-vertex-interpolated, so
+    // it hugs the true waterline) + a noisy lapping band from shore distance.
+    let contact = (1.0 - smoothstep(0.0, 0.5, depth)) * 0.55;
+    let band = 1.0 - smoothstep(0.2, 2.0, shore);
     let fn1 = w_noise(wp.xz * 1.9 + vec2<f32>(globals.time * 0.06, globals.time * 0.045));
-    let foam = clamp(
-        band * smoothstep(1.0 - band, 1.0, fn1) + (1.0 - smoothstep(0.0, 0.35, shore)) * 0.55,
-        0.0,
-        1.0,
-    );
-    col = mix(col, vec3<f32>(0.85, 0.90, 0.92), foam * 0.8);
+    let foam = clamp(contact + band * smoothstep(0.55, 0.95, fn1) * 0.5, 0.0, 1.0);
+    col = mix(col, vec3<f32>(0.85, 0.90, 0.92), foam * 0.75);
 
-    // Soft waterline: fade out over the first 25 cm of depth.
-    let alpha = mix(0.25, 0.94, smoothstep(0.0, 0.25, depth));
+    // Soft waterline: fully transparent right at the shore, opaque past ~30 cm depth.
+    let alpha = smoothstep(0.015, 0.30, depth) * 0.94;
 
     var out: FragmentOutput;
     out.color = vec4<f32>(col, alpha);

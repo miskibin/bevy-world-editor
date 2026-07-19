@@ -1,16 +1,41 @@
 //! Parameter panel (egui): seed, terrain, erosion, forest sliders + Regenerate.
 
+use bevy::camera::Exposure;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::pbr::{
+    DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
+    ScreenSpaceAmbientOcclusionQualityLevel,
+};
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::genrun::{GenParams, Regen};
 
+/// Post-processing knobs surfaced in the panel. Mirrors the camera components set up in
+/// `sky.rs`; `apply` in `panel_ui` writes them through every frame the panel changes them.
+#[derive(Resource)]
+pub struct GfxSettings {
+    pub fog: bool,
+    /// Fog visibility distance in metres (smaller = thicker haze).
+    pub visibility: f32,
+    pub bloom: f32,
+    pub ev100: f32,
+    pub ssao: bool,
+}
+
+impl Default for GfxSettings {
+    fn default() -> Self {
+        GfxSettings { fog: true, visibility: 3800.0, bloom: 0.12, ev100: 11.7, ssao: true }
+    }
+}
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((EguiPlugin::default(), FrameTimeDiagnosticsPlugin::default()))
+        app.init_resource::<GfxSettings>()
+            .add_plugins((EguiPlugin::default(), FrameTimeDiagnosticsPlugin::default()))
             .add_systems(EguiPrimaryContextPass, panel_ui);
     }
 }
@@ -20,6 +45,9 @@ fn panel_ui(
     mut params: ResMut<GenParams>,
     mut regen: Regen,
     diagnostics: Res<DiagnosticsStore>,
+    mut gfx: ResMut<GfxSettings>,
+    mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
+    mut commands: Commands,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Forest Generator").default_width(250.0).show(ctx, |ui| {
@@ -72,6 +100,44 @@ fn panel_ui(
             ui.add(egui::Slider::new(&mut p.forest.species_weights[i], 0.0..=2.0).text(*name));
         }
         ui.add(egui::Slider::new(&mut p.forest.treeline, 100.0..=300.0).text("treeline"));
+
+        ui.separator();
+        ui.label("Graphics");
+        let mut changed = false;
+        changed |= ui.checkbox(&mut gfx.fog, "fog").changed();
+        if gfx.fog {
+            changed |= ui
+                .add(
+                    egui::Slider::new(&mut gfx.visibility, 400.0..=6000.0)
+                        .logarithmic(true)
+                        .text("visibility (m)"),
+                )
+                .changed();
+        }
+        changed |= ui.add(egui::Slider::new(&mut gfx.bloom, 0.0..=0.5).text("bloom")).changed();
+        changed |=
+            ui.add(egui::Slider::new(&mut gfx.ev100, 9.5..=13.5).text("exposure")).changed();
+        changed |= ui.checkbox(&mut gfx.ssao, "SSAO").changed();
+        if changed {
+            if let Ok((entity, mut fog, mut bloom, mut exposure)) = cam.single_mut() {
+                let vis = if gfx.fog { gfx.visibility } else { 1.0e6 };
+                fog.falloff = FogFalloff::from_visibility_colors(
+                    vis,
+                    Color::srgb(0.42, 0.48, 0.55),
+                    Color::srgb(0.68, 0.76, 0.88),
+                );
+                bloom.intensity = gfx.bloom;
+                exposure.ev100 = gfx.ev100;
+                if gfx.ssao {
+                    commands.entity(entity).insert(ScreenSpaceAmbientOcclusion {
+                        quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                        ..default()
+                    });
+                } else {
+                    commands.entity(entity).remove::<ScreenSpaceAmbientOcclusion>();
+                }
+            }
+        }
 
         ui.separator();
         if regen.running() {
