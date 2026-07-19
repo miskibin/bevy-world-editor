@@ -25,12 +25,13 @@ impl Default for ForestParams {
     fn default() -> Self {
         ForestParams {
             seed: 20260719,
-            density: 0.8,
+            density: 0.72,
             species_weights: [1.0, 1.0, 1.0, 1.0],
             treeline: 215.0,
             max_slope: 0.75,
             water_level: 8.0,
-            spacing: 4.6,
+            // Fewer-but-prettier: wider spacing frees the frame budget for richer LOD0s.
+            spacing: 5.4,
         }
     }
 }

@@ -54,6 +54,10 @@ fn rebuild_on_ready(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
+    // Model-review mode: bare terrain + the staged LOD grid only.
+    if std::env::var("WED_LODLINE").is_ok() {
+        return;
+    }
     // Change-detection trigger (see terrain_mesh::rebuild_on_ready for why not a message).
     let (Some(world), Some(assets)) = (world, assets) else { return };
     if !world.is_changed() {

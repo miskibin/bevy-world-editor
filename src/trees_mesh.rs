@@ -19,11 +19,14 @@ use crate::foliage;
 pub const VARIANTS: usize = 4;
 
 /// Plain CPU mesh accumulator — also the merge unit for far-field chunks.
+/// `colors` are per-vertex tints (StandardMaterial multiplies them into the texture) —
+/// this is how 16 shared meshes render as a colour-varied forest for free.
 #[derive(Default, Clone)]
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -36,6 +39,9 @@ impl MeshData {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions.clone());
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals.clone());
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs.clone());
+        if !self.colors.is_empty() {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors.clone());
+        }
         mesh.insert_indices(Indices::U32(self.indices.clone()));
         mesh
     }
@@ -52,7 +58,51 @@ impl MeshData {
             self.normals.push((rot * Vec3::from_array(*n)).to_array());
         }
         self.uvs.extend_from_slice(&other.uvs);
+        if other.colors.is_empty() {
+            self.colors.extend(std::iter::repeat_n([1.0, 1.0, 1.0, 1.0], other.positions.len()));
+        } else {
+            self.colors.extend_from_slice(&other.colors);
+        }
         self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+}
+
+/// Per-(species, variant) foliage tint — species character + variant spread, including
+/// one warm "autumn-touched" variant for the broadleaves and a golden birch.
+fn foliage_tint(sp: Species, var: usize) -> [f32; 3] {
+    match sp {
+        Species::Pine => [
+            [0.95, 1.02, 0.88],
+            [1.06, 1.0, 0.72],
+            [0.86, 0.96, 0.80],
+            [1.0, 0.92, 0.66],
+        ][var % 4],
+        Species::Spruce => [
+            [0.84, 0.94, 1.04],
+            [0.92, 1.0, 0.90],
+            [0.76, 0.87, 0.96],
+            [0.96, 1.0, 0.84],
+        ][var % 4],
+        Species::Broadleaf => [
+            [1.0, 1.0, 0.88],
+            [1.10, 1.04, 0.68],
+            [0.85, 1.0, 0.78],
+            [1.48, 0.92, 0.40], // autumn-orange crown
+        ][var % 4],
+        Species::Birch => [
+            [1.10, 1.10, 0.72],
+            [1.22, 1.14, 0.58],
+            [1.0, 1.06, 0.78],
+            [1.52, 1.18, 0.42], // golden birch
+        ][var % 4],
+    }
+}
+
+fn wood_tint(sp: Species, var: usize) -> [f32; 3] {
+    let v = [1.0, 0.88, 1.08, 0.95][var % 4];
+    match sp {
+        Species::Birch => [v, v, v], // keep the white bark white-ish
+        _ => [v, v * 0.97, v * 0.94],
     }
 }
 
@@ -70,6 +120,7 @@ fn build_wood(
     sides: u32,
     max_level: u8,
     bark_uv: Option<(f32, f32, f32, f32)>,
+    tint: [f32; 3],
 ) -> MeshData {
     let mut md = MeshData::default();
     for seg in &sk.segments {
@@ -78,6 +129,7 @@ fn build_wood(
         }
         tube(&mut md, seg, sides, bark_uv);
     }
+    md.colors = vec![[tint[0], tint[1], tint[2], 1.0]; md.positions.len()];
     md
 }
 
@@ -118,16 +170,6 @@ fn tube(md: &mut MeshData, seg: &Segment, sides: u32, bark_uv: Option<(f32, f32,
 
 /// Leaf cards: two crossed quads per anchor (at LOD0) or one (lower LODs), UV = the
 /// species' atlas leaf region, normals = the anchor's outward direction.
-fn build_leaves(
-    sk: &TreeSkeleton,
-    sp: Species,
-    every: usize,
-    size_mul: f32,
-    crossed: bool,
-) -> MeshData {
-    build_leaves_varied(sk, sp, every, size_mul, crossed, false)
-}
-
 fn build_leaves_varied(
     sk: &TreeSkeleton,
     sp: Species,
@@ -135,6 +177,7 @@ fn build_leaves_varied(
     size_mul: f32,
     crossed: bool,
     vary: bool,
+    tint: [f32; 3],
 ) -> MeshData {
     let mut md = MeshData::default();
     let region = foliage::leaf_uv(sp);
@@ -156,13 +199,20 @@ fn build_leaves_varied(
         };
         let n_quads = if crossed { 2 } else { 1 };
         for q in 0..n_quads {
-            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, uv);
+            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, uv, tint);
         }
     }
     md
 }
 
-fn card(md: &mut MeshData, l: &LeafAnchor, size_mul: f32, roll: f32, uv: (f32, f32, f32, f32)) {
+fn card(
+    md: &mut MeshData,
+    l: &LeafAnchor,
+    size_mul: f32,
+    roll: f32,
+    uv: (f32, f32, f32, f32),
+    tint: [f32; 3],
+) {
     let dir = Vec3::from_array(l.dir).normalize_or_zero();
     let dir = if dir == Vec3::ZERO { Vec3::Y } else { dir };
     let (mut u, mut v) = ortho_frame(dir);
@@ -173,6 +223,14 @@ fn card(md: &mut MeshData, l: &LeafAnchor, size_mul: f32, roll: f32, uv: (f32, f
     let half = l.size * size_mul * 0.5;
     let c = Vec3::from_array(l.pos);
     let base = md.positions.len() as u32;
+    // Per-card brightness/hue wobble on top of the variant tint — breaks up the crown.
+    let j = 0.86 + ((l.pos[0] * 47.1 + l.pos[1] * 9.7 + l.pos[2] * 23.3).sin().abs()) * 0.28;
+    let col = [
+        (tint[0] * j).min(2.0),
+        (tint[1] * (0.9 + j * 0.1)).min(2.0),
+        (tint[2] * j * 0.95).min(2.0),
+        1.0,
+    ];
     for (su, sv, uu, vv) in [
         (-1.0f32, -1.0f32, uv.0, uv.3),
         (1.0, -1.0, uv.2, uv.3),
@@ -182,19 +240,21 @@ fn card(md: &mut MeshData, l: &LeafAnchor, size_mul: f32, roll: f32, uv: (f32, f
         md.positions.push((c + u * su * half + v * sv * half).to_array());
         md.normals.push(dir.to_array());
         md.uvs.push([uu, vv]);
+        md.colors.push(col);
     }
     md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 /// LOD2: 3-sided atlas-bark trunk + ≤12 huge cards. One material → one entity, mergeable.
-fn build_lod2(sk: &TreeSkeleton, sp: Species) -> MeshData {
-    let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)));
+fn build_lod2(sk: &TreeSkeleton, sp: Species, var: usize) -> MeshData {
+    let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)), wood_tint(sp, var));
     let every = (sk.leaves.len() / 11).max(1);
-    let leaves = build_leaves(sk, sp, every, 3.9, false);
+    let leaves = build_leaves_varied(sk, sp, every, 3.9, false, false, foliage_tint(sp, var));
     let base = md.positions.len() as u32;
     md.positions.extend_from_slice(&leaves.positions);
     md.normals.extend_from_slice(&leaves.normals);
     md.uvs.extend_from_slice(&leaves.uvs);
+    md.colors.extend_from_slice(&leaves.colors);
     md.indices.extend(leaves.indices.iter().map(|i| i + base));
     md
 }
@@ -296,14 +356,18 @@ fn build_tree_assets(
         let mut per_variant = Vec::with_capacity(VARIANTS);
         for var in 0..VARIANTS {
             let sk = worldgen::tree::grow(sp, var as u32 * 131 + 7);
-            let lod2_data = build_lod2(&sk, sp);
+            let lod2_data = build_lod2(&sk, sp, var);
+            let ft = foliage_tint(sp, var);
+            let wt = wood_tint(sp, var);
             per_variant.push(VariantMeshes {
-                lod0_wood: meshes.add(build_wood(&sk, 6, 2, None).to_mesh()),
-                lod0_leaf: meshes.add(build_leaves_varied(&sk, sp, 1, 0.9, true, true).to_mesh()),
-                lod1_wood: meshes.add(build_wood(&sk, 4, 1, None).to_mesh()),
+                lod0_wood: meshes.add(build_wood(&sk, 6, 2, None, wt).to_mesh()),
+                lod0_leaf: meshes
+                    .add(build_leaves_varied(&sk, sp, 1, 0.9, true, true, ft).to_mesh()),
+                lod1_wood: meshes.add(build_wood(&sk, 4, 1, None, wt).to_mesh()),
                 // Uncrossed + every-3rd: the LOD1 ring holds the most trees on screen, so
                 // its per-tree quad count decides the frame budget.
-                lod1_leaf: meshes.add(build_leaves_varied(&sk, sp, 3, 2.1, false, true).to_mesh()),
+                lod1_leaf: meshes
+                    .add(build_leaves_varied(&sk, sp, 3, 2.1, false, true, ft).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
             });

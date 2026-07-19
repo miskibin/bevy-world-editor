@@ -9,6 +9,7 @@ mod flycam;
 mod foliage;
 mod forest;
 mod genrun;
+mod lodline;
 mod sky;
 mod terrain_mat;
 mod terrain_mesh;
@@ -37,6 +38,7 @@ fn main() {
             forest::ForestPlugin,         // near streaming + far merged impostors
             ui::UiPlugin,                 // egui parameter panel
             capture::CapturePlugin,       // WED_SHOT harness
+            lodline::LodLinePlugin,       // WED_LODLINE model-review grid
         ))
         .run();
 }
