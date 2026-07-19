@@ -46,6 +46,9 @@ fn panel_ui(
     mut regen: Regen,
     diagnostics: Res<DiagnosticsStore>,
     mut gfx: ResMut<GfxSettings>,
+    mut audio: ResMut<crate::ambience::AudioSettings>,
+    mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
+    mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
     mut commands: Commands,
 ) -> Result {
@@ -118,6 +121,21 @@ fn panel_ui(
         changed |=
             ui.add(egui::Slider::new(&mut gfx.ev100, 9.5..=13.5).text("exposure")).changed();
         changed |= ui.checkbox(&mut gfx.ssao, "SSAO").changed();
+        ui.checkbox(&mut atmo.enabled, "cinematic haze");
+        if atmo.enabled {
+            ui.add(egui::Slider::new(&mut atmo.strength, 0.0..=1.0).text("haze strength"));
+        }
+        if let Ok((_, mut dof)) = dof_q.single_mut() {
+            ui.add(egui::Slider::new(&mut dof.max_radius, 0.0..=12.0).text("far blur"));
+        }
+
+        ui.separator();
+        ui.label("Audio");
+        ui.add(egui::Slider::new(&mut audio.master, 0.0..=1.0).text("master"));
+        ui.add(egui::Slider::new(&mut audio.birds, 0.0..=1.0).text("birds"));
+        ui.add(egui::Slider::new(&mut audio.water, 0.0..=1.0).text("water"));
+        ui.add(egui::Slider::new(&mut audio.wind, 0.0..=1.0).text("wind"));
+        ui.add(egui::Slider::new(&mut audio.forest, 0.0..=1.0).text("forest bed"));
         if changed {
             if let Ok((entity, mut fog, mut bloom, mut exposure)) = cam.single_mut() {
                 let vis = if gfx.fog { gfx.visibility } else { 1.0e6 };

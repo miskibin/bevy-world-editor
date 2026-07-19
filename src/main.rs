@@ -5,7 +5,9 @@
 //! `WED_SHOT=path.png` (+`WED_SHOT_WARMUP`).
 
 mod ambience;
+mod atmospherics;
 mod capture;
+mod dof;
 mod flycam;
 mod foliage;
 mod forest;
@@ -45,6 +47,8 @@ fn main() {
             capture::CapturePlugin,       // WED_SHOT harness
             lodline::LodLinePlugin,       // WED_LODLINE model-review grid
             ambience::AmbiencePlugin,     // birds/water/wind ambient loops
+            atmospherics::AtmosphericsPlugin, // cinematic height-fog post pass (Warbell port)
+            dof::DofPlugin,               // far-distance bokeh soften (Warbell port)
         ))
         .run();
 }

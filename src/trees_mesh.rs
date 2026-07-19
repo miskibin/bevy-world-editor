@@ -10,7 +10,10 @@
 //! realistic edition).
 
 use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
 use worldgen::tree::{LeafAnchor, Segment, TreeSkeleton};
 use worldgen::{ALL_SPECIES, Species};
 
@@ -296,12 +299,35 @@ fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
     md
 }
 
+/// Leaf material = StandardMaterial fragment + wind-sway vertex stage (leaves.wgsl).
+pub type LeafMaterial = ExtendedMaterial<StandardMaterial, LeafSway>;
+
+#[derive(Asset, AsBindGroup, Clone, TypePath)]
+pub struct LeafSway {
+    /// x = time (seconds); driven by `drive_leaf_time`. A material uniform because the
+    /// prepass view layout has no `globals` binding (validated the hard way).
+    #[uniform(100)]
+    pub params: Vec4,
+}
+
+impl MaterialExtension for LeafSway {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/leaves.wgsl".into()
+    }
+
+    // The prepass MUST sway identically — main pass depth-tests EQUAL against prepass
+    // depth, and unswayed prepass depth discards every swayed leaf pixel ("frost" bug).
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/leaves_prepass.wgsl".into()
+    }
+}
+
 #[derive(Resource)]
 pub struct TreeAssets {
     /// [species][variant]
     pub variants: Vec<Vec<VariantMeshes>>,
     pub bark_mats: [Handle<StandardMaterial>; 4],
-    pub leaf_mat: Handle<StandardMaterial>,
+    pub leaf_mat: Handle<LeafMaterial>,
 }
 
 pub fn species_index(sp: Species) -> usize {
@@ -317,7 +343,20 @@ pub struct TreeAssetsPlugin;
 
 impl Plugin for TreeAssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, build_tree_assets);
+        app.add_plugins(MaterialPlugin::<LeafMaterial>::default())
+            .add_systems(Startup, build_tree_assets)
+            .add_systems(Update, drive_leaf_time);
+    }
+}
+
+fn drive_leaf_time(
+    time: Res<Time>,
+    assets: Option<Res<TreeAssets>>,
+    mut mats: ResMut<Assets<LeafMaterial>>,
+) {
+    let Some(assets) = assets else { return };
+    if let Some(mut mat) = mats.get_mut(&assets.leaf_mat) {
+        mat.extension.params.x = time.elapsed_secs();
     }
 }
 
@@ -347,20 +386,24 @@ fn build_tree_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut leaf_mats: ResMut<Assets<LeafMaterial>>,
 ) {
     let atlas = images.add(foliage::build_atlas());
-    let leaf_mat = mats.add(StandardMaterial {
-        base_color_texture: Some(atlas),
-        // 0.33 clip (UE guidance): higher clips erode mip'd leaves to nothing at distance.
-        alpha_mode: AlphaMode::Mask(0.33),
-        perceptual_roughness: 0.9,
-        reflectance: 0.12,
-        double_sided: true,
-        cull_mode: None,
-        // Light leaking through the canopy — cards lit from behind glow instead of
-        // going black, the single biggest "real foliage" cue.
-        diffuse_transmission: 0.4,
-        ..default()
+    let leaf_mat = leaf_mats.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color_texture: Some(atlas),
+            // 0.33 clip (UE guidance): higher clips erode mip'd leaves at distance.
+            alpha_mode: AlphaMode::Mask(0.33),
+            perceptual_roughness: 0.9,
+            reflectance: 0.12,
+            double_sided: true,
+            cull_mode: None,
+            // Light leaking through the canopy — cards lit from behind glow instead of
+            // going black, the single biggest "real foliage" cue.
+            diffuse_transmission: 0.4,
+            ..default()
+        },
+        extension: LeafSway { params: Vec4::ZERO },
     });
 
     let (birch_albedo, birch_rough) = foliage::build_birch_bark();

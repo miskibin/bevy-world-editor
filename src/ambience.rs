@@ -28,11 +28,28 @@ struct WaterProximity {
 
 const WATER_HEAR: f32 = 55.0;
 
+/// User-facing mixer (panel sliders): master + per-loop multipliers.
+#[derive(Resource)]
+pub struct AudioSettings {
+    pub master: f32,
+    pub birds: f32,
+    pub water: f32,
+    pub wind: f32,
+    pub forest: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        AudioSettings { master: 1.0, birds: 1.0, water: 1.0, wind: 1.0, forest: 1.0 }
+    }
+}
+
 pub struct AmbiencePlugin;
 
 impl Plugin for AmbiencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterProximity>()
+            .init_resource::<AudioSettings>()
             .add_systems(Startup, spawn_loops)
             .add_systems(Update, (rebuild_proximity, drive_volumes));
     }
@@ -103,6 +120,7 @@ fn rebuild_proximity(world: Option<Res<GeneratedWorld>>, mut prox: ResMut<WaterP
 fn drive_volumes(
     world: Option<Res<GeneratedWorld>>,
     prox: Res<WaterProximity>,
+    s: Res<AudioSettings>,
     cam: Query<&Transform, With<Camera3d>>,
     mut sinks: Query<(&Loop, &mut AudioSink)>,
     time: Res<Time>,
@@ -113,21 +131,24 @@ fn drive_volumes(
     let ground = hf.sample_world(p.x - prox.offset, p.z - prox.offset);
     let above = (p.y - ground).max(0.0);
 
-    // Water: proximity in the map plane, faded by height above the terrain.
-    let water_v = if prox.size > 0 {
+    // Water proximity factor (also gates the wind — user verdict: wind belongs by the
+    // water and much quieter overall).
+    let water_near = if prox.size > 0 {
         let gx = ((p.x - prox.offset) / prox.cell).clamp(0.0, (prox.size - 1) as f32) as usize;
         let gz = ((p.z - prox.offset) / prox.cell).clamp(0.0, (prox.size - 1) as f32) as usize;
         let d = prox.dist[gz * prox.size + gx].min(WATER_HEAR);
-        (1.0 - d / WATER_HEAR).powf(1.4) * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.85
+        (1.0 - d / WATER_HEAR).powf(1.4)
     } else {
         0.0
     };
+    let water_v = water_near * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.85 * s.water;
     // Birds + forest bed: strongest near the ground, gone high above the canopy.
     let low = 1.0 - ((above - 12.0) / 70.0).clamp(0.0, 1.0);
-    let birds_v = 0.5 * low;
-    let forest_v = 0.28 * low;
-    // Wind: takes over with altitude.
-    let wind_v = 0.10 + (above / 110.0).clamp(0.0, 1.0) * 0.55;
+    let birds_v = 0.5 * low * s.birds;
+    let forest_v = 0.28 * low * s.forest;
+    // Wind: quiet, mostly an open-water breeze + a whisper at real altitude.
+    let wind_v =
+        (0.015 + water_near * 0.14 + (above / 150.0).clamp(0.0, 1.0) * 0.08) * s.wind;
 
     // Ease volumes so flying between zones swells instead of snapping.
     let k = (time.delta_secs() * 2.2).min(1.0);
@@ -138,6 +159,7 @@ fn drive_volumes(
             Loop::Wind => wind_v,
             Loop::Forest => forest_v,
         };
+        let target = target * s.master;
         let cur = sink.volume().to_linear();
         sink.set_volume(Volume::Linear(cur + (target - cur) * k));
     }

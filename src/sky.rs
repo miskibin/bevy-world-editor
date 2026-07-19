@@ -28,6 +28,10 @@ use crate::flycam::FlyCam;
 
 const IBL_INTENSITY: f32 = 1500.0;
 
+/// Marker for the sun light (atmospherics reads its direction).
+#[derive(Component)]
+pub struct Sun;
+
 pub struct SkyPlugin;
 
 impl Plugin for SkyPlugin {
@@ -90,7 +94,9 @@ fn setup_camera(
         Bloom { intensity: 0.12, ..Bloom::NATURAL },
         // Gentle atmospheric fog — aerial perspective over the 2 km map, not a wall.
         DistanceFog {
-            color: Color::srgba(0.75, 0.82, 0.92, 1.0),
+            // Warm cream haze (Warbell lesson: pale-blue fog reads as milky white-out;
+            // warm reads as sunlit atmosphere). Atmospherics inherits this colour live.
+            color: Color::srgba(0.80, 0.76, 0.64, 1.0),
             directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.6),
             directional_light_exponent: 30.0,
             falloff: FogFalloff::from_visibility_colors(
@@ -108,6 +114,8 @@ fn setup_camera(
             AtmosphereSettings::default(),
             ShadowFilteringMethod::Gaussian,
             FlyCam::new(yaw, pitch),
+            crate::atmospherics::default_atmospherics(),
+            crate::dof::default_dof(),
         ),
     ));
 
@@ -117,6 +125,7 @@ fn setup_camera(
 
 fn setup_sun(mut commands: Commands) {
     commands.spawn((
+        Sun,
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.88),
             illuminance: 32_000.0, // bright late-morning sun
