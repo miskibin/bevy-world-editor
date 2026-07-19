@@ -130,6 +130,9 @@ fn stream_grass(
                 }
                 state.live.insert(key, e.id());
                 budget -= 1;
+                if state.live.len() == 1 {
+                    info!("grass: first chunk spawned");
+                }
             } else {
                 // Nothing grows here — remember with a placeholder so we don't rebuild.
                 state.live.insert(key, Entity::PLACEHOLDER);
