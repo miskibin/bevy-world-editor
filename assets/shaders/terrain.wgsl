@@ -56,6 +56,56 @@ fn patch_noise(p: vec2<f32>) -> f32 {
     return t_noise_rot(p, 0.946, 0.326) * 0.65 + t_noise_rot(p * 2.3, 0.556, 0.831) * 0.35;
 }
 
+// Micro-relief height field (Warbell recipe): three rotated-lattice octaves at clump
+// scales — drives BOTH the bump normal tilt and the cavity AO so albedo and relief agree.
+fn terrain_h(p: vec2<f32>) -> f32 {
+    return t_noise_rot(p * 0.35, 0.946, 0.326) * 0.50
+        + t_noise_rot(p * 0.90, 0.682, 0.731) * 0.35
+        + t_noise_rot(p * 2.20, 0.292, 0.956) * 0.22;
+}
+
+// Fallen-twig field (Warbell port, simplified): nearest bent/tapered stick in the 3x3
+// cell neighbourhood; returns (coverage, tone-along-stick).
+fn twig_field(wp: vec2<f32>) -> vec2<f32> {
+    let warp = (vec2<f32>(t_noise(wp * 0.8 + 8.0), t_noise(wp * 0.8 + 30.0)) - 0.5) * 1.7;
+    let q = wp + warp * 0.10;
+    let cell = 1.25;
+    let ci = floor(q / cell);
+    var best_d = 1e9;
+    var best_h = 0.0;
+    var best_seed = 0.0;
+    for (var dy = -1; dy <= 1; dy += 1) {
+        for (var dx = -1; dx <= 1; dx += 1) {
+            let c = ci + vec2<f32>(f32(dx), f32(dy));
+            let r1 = t_hash(c);
+            if (r1 < 0.45) {
+                let r2 = t_hash(c + 17.3);
+                let r3 = t_hash(c + 41.7);
+                let r4 = t_hash(c + 71.1);
+                let center = (c + vec2<f32>(r2, r3)) * cell;
+                let ang = r4 * 6.28318;
+                let dir = vec2<f32>(cos(ang), sin(ang));
+                let len = (0.20 + r1 * 0.55) * cell;
+                let a = center - dir * len * 0.5;
+                let ba = dir * len;
+                let pa = q - a;
+                let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
+                let d = length(pa - ba * h);
+                if (d < best_d) {
+                    best_d = d;
+                    best_h = h;
+                    best_seed = r2;
+                }
+            }
+        }
+    }
+    let w = 0.045 * (0.30 + 0.70 * (1.0 - pow(abs(best_h * 2.0 - 1.0), 1.7)));
+    let edge = 0.008 + 0.014 * t_noise(wp * 9.0);
+    let cov = 1.0 - smoothstep(w, w + edge, best_d);
+    let tone = t_noise(vec2<f32>(best_h * 4.0, best_seed * 13.0));
+    return vec2<f32>(cov, tone);
+}
+
 // Planar (world-XZ) layer sample at two scales, blended by a large-scale noise mask so
 // the texture repeat never registers.
 fn sample_planar(layer: i32, wp: vec3<f32>) -> vec4<f32> {
@@ -84,11 +134,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let gn = normalize(in.world_normal);
 
     // UV1 carries per-vertex data: x = moisture 0..1, y = normalised flow 0..1.
+    // UV0.x carries trail wear 0..1 (0 on non-terrain meshes like rocks).
     var moisture = 0.5;
     var flow = 0.0;
+    var trail = 0.0;
 #ifdef VERTEX_UVS_B
     moisture = in.uv_b.x;
     flow = in.uv_b.y;
+#endif
+#ifdef VERTEX_UVS_A
+    trail = in.uv.x;
 #endif
 
     // ── Layer weights ────────────────────────────────────────────────────────────
@@ -122,6 +177,30 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         albedo += (rx * tws.x + ry * tws.y + rz * tws.z) * rock_w;
     }
 
+    // Trail lane: worn earth punches through every layer (dirt sample, slightly dusty),
+    // with a ragged noise-broken edge so the path never reads as a painted stripe.
+    if trail > 0.01 {
+        let ragged = trail * (0.75 + 0.5 * patch_noise(wp.xz * 0.9));
+        let lane = smoothstep(0.25, 0.75, ragged);
+        let dirt = sample_planar(3, wp);
+        albedo = mix(albedo, dirt * vec4<f32>(1.06, 1.0, 0.92, 1.0), lane);
+    }
+
+    // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
+    let moss = smoothstep(0.55, 0.85, moisture)
+        * smoothstep(0.45, 0.75, patch_noise(wp.xz * 0.11))
+        * (grass_w + ff_w)
+        * (1.0 - trail);
+    albedo = vec4<f32>(mix(albedo.rgb, vec3<f32>(0.16, 0.26, 0.10), moss * 0.55), 1.0);
+
+    // Fallen-twig litter baked into the forest floor (Warbell twig_field, simplified):
+    // one bent, tapered stick per ~1.25 m cell, random position/angle per cell.
+    if ff_w > 0.05 {
+        let tw = twig_field(wp.xz);
+        let bark = vec3<f32>(0.24, 0.17, 0.11) * (0.75 + tw.y * 0.5);
+        albedo = vec4<f32>(mix(albedo.rgb, bark, tw.x * ff_w * 0.8), 1.0);
+    }
+
     // Faint large-scale value drift — cures the "one flat green" read at distance.
     let drift = 0.90 + 0.20 * patch_noise(wp.xz * 0.0045);
     pbr_input.material.base_color = vec4<f32>(albedo.rgb * drift, 1.0);
@@ -151,6 +230,30 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             nx.x * tws.x + ny.y * tws.y,
         );
         n = normalize(mix(n, normalize(gn + rock_perturb * strength * 1.3), rock_w));
+    }
+    // ── Micro-relief bump + cavity AO (Warbell's "fake 3D on flat ground") ───────
+    // Finite-difference gradient of the clump-scale height field tilts the shading
+    // normal; baked soft shadow in the SAME field's hollows carves depth that a tilted
+    // normal alone can't give (ambient hits every direction). Top faces only; trails
+    // flatten it (trodden ground is packed smooth).
+    let topw = smoothstep(0.35, 0.80, gn.y) * (1.0 - trail * 0.7);
+    if topw > 0.001 {
+        let e = 0.18;
+        let hx = terrain_h(wp.xz + vec2<f32>(e, 0.0)) - terrain_h(wp.xz - vec2<f32>(e, 0.0));
+        let hz = terrain_h(wp.xz + vec2<f32>(0.0, e)) - terrain_h(wp.xz - vec2<f32>(0.0, e));
+        n = normalize(n + vec3<f32>(-hx, 0.0, -hz) * 1.1 * topw);
+
+        let h0 = terrain_h(wp.xz);
+        let mound = smoothstep(0.10, 0.82, h0);
+        let crease = t_noise_rot(wp.xz * 1.7, 0.81, 0.59) * 0.34
+            + t_noise_rot(wp.xz * 3.3, 0.60, 0.80) * 0.40
+            + t_noise_rot(wp.xz * 6.7, 0.29, 0.957) * 0.26;
+        let groove = smoothstep(0.32, 0.70, crease);
+        let ao = mix(0.58, 1.0, mound) * mix(0.74, 1.0, groove);
+        let crown = 1.0 + smoothstep(0.62, 1.0, h0) * 0.18;
+        let shade = mix(1.0, ao * crown, topw);
+        pbr_input.material.base_color =
+            vec4<f32>(pbr_input.material.base_color.rgb * shade, 1.0);
     }
     pbr_input.N = n;
 

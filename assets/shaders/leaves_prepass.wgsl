@@ -70,5 +70,12 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.instance_index = vertex.instance_index;
 #endif
 
+#ifdef VISIBILITY_RANGE_DITHER
+    // MUST be set — an uninitialised dither level discards leaf pixels through the whole
+    // LOD-crossfade band (the band-localised "frost" variant of the depth-EQUAL bug).
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
+        vertex.instance_index, mesh_world_from_local[3]);
+#endif
+
     return out;
 }

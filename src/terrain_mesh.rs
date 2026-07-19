@@ -290,8 +290,9 @@ fn build_chunk(w: &worldgen::World, x0: usize, z0: usize, stride: usize) -> Mesh
             let h = hf.get(gx, gz);
             positions.push([wx, h, wz]);
             normals.push(hf.normal_world(gx as f32 * hf.cell, gz as f32 * hf.cell));
-            uv0.push([wx, wz]);
             let i = gz * size + gx;
+            // UV0.x = trail wear (the splat shader's beaten-path lane); y spare.
+            uv0.push([w.trails[i], 0.0]);
             let flow = (1.0 + w.flow[i]).ln() / flow_max.ln();
             uv1.push([w.moisture[i], flow.clamp(0.0, 1.0)]);
         }

@@ -12,7 +12,9 @@ mod flycam;
 mod foliage;
 mod forest;
 mod genrun;
+mod grass;
 mod lodline;
+mod props;
 mod rocks;
 mod sky;
 mod water_mat;
@@ -33,6 +35,7 @@ fn main() {
             }),
             ..default()
         }))
+        // Two tuples — the `Plugins` impl caps at 15 elements per tuple.
         .add_plugins((
             sky::SkyPlugin,               // camera + sun + atmosphere + IBL
             flycam::FlyCamPlugin,         // free camera controls
@@ -41,8 +44,12 @@ fn main() {
             water_mat::WaterMatPlugin,    // lake shader material
             terrain_mesh::TerrainMeshPlugin, // chunked terrain + LOD + lake meshes
             rocks::RocksPlugin,           // chunk-merged boulders (terrain material)
+            grass::GrassPlugin,           // streamed swaying grass ring
+            props::PropsPlugin,           // bushes + logs + stumps
             trees_mesh::TreeAssetsPlugin, // tree meshes, foliage atlas, bark materials
             forest::ForestPlugin,         // near streaming + far merged impostors
+        ))
+        .add_plugins((
             ui::UiPlugin,                 // egui parameter panel
             capture::CapturePlugin,       // WED_SHOT harness
             lodline::LodLinePlugin,       // WED_LODLINE model-review grid

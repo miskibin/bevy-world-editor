@@ -129,6 +129,89 @@ fn neighborhood_water(hf: &HeightField, water: &[f32], x: usize, z: usize) -> Op
     best.is_finite().then_some(best)
 }
 
+/// Undergrowth prop kinds.
+pub const PROP_BUSH_BROADLEAF: u8 = 0;
+pub const PROP_BUSH_BIRCH: u8 = 1;
+pub const PROP_LOG: u8 = 2;
+pub const PROP_STUMP: u8 = 3;
+
+#[derive(Clone, Copy)]
+pub struct PropInstance {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub scale: f32,
+    pub kind: u8,
+}
+
+/// Bushes cluster at forest edges (the clearing-noise boundary band), logs/stumps lie
+/// sparsely inside the woods. Trails stay clear.
+pub fn scatter_props(
+    hf: &HeightField,
+    slope: &[f32],
+    moisture: &[f32],
+    water: &[f32],
+    trails: &[f32],
+    p: &ForestParams,
+) -> Vec<PropInstance> {
+    let ext = hf.extent();
+    let spacing = 4.4f32;
+    let n = (ext / spacing) as i32;
+    let clearing_freq = 1.0 / 260.0;
+    let mut out = Vec::new();
+    for gz in 1..n - 1 {
+        for gx in 1..n - 1 {
+            let site_seed = lowbias32(
+                (gx as u32)
+                    .wrapping_mul(0x1234_7A31)
+                    .wrapping_add((gz as u32).wrapping_mul(0x0068_E31D))
+                    .wrapping_add(p.seed ^ 0x00B0_5511),
+            );
+            let mut rng = Rng::new(site_seed);
+            let wx = (gx as f32 + rng.f32()) * spacing;
+            let wz = (gz as f32 + rng.f32()) * spacing;
+            let ix = ((wx / hf.cell) as usize).min(hf.size - 1);
+            let iz = ((wz / hf.cell) as usize).min(hf.size - 1);
+            let i = iz * hf.size + ix;
+            let h = hf.h[i];
+            if water[i].is_finite()
+                || h < p.water_level + 0.6
+                || slope[i] > 0.65
+                || trails[i] > 0.30
+                || h > p.treeline
+            {
+                continue;
+            }
+            let clearing = fbm(wx * clearing_freq, wz * clearing_freq, 3, p.seed.wrapping_add(555));
+            let thr = 0.40 - 0.25 * p.density;
+            let in_forest = clearing > thr;
+            // Edge band: near the clearing threshold from either side.
+            let edge = 1.0 - ((clearing - thr).abs() / 0.06).min(1.0);
+            let m = moisture[i];
+            let bush_p = edge * 0.35 + if in_forest { 0.015 } else { 0.030 * m };
+            let log_p = if in_forest { 0.020 } else { 0.0 };
+            let r = rng.f32();
+            let kind = if r < bush_p {
+                if rng.chance(0.6) { PROP_BUSH_BROADLEAF } else { PROP_BUSH_BIRCH }
+            } else if r < bush_p + log_p {
+                if rng.chance(0.72) { PROP_LOG } else { PROP_STUMP }
+            } else {
+                continue;
+            };
+            out.push(PropInstance {
+                x: wx,
+                y: hf.sample_world(wx, wz),
+                z: wz,
+                yaw: rng.range(0.0, std::f32::consts::TAU),
+                scale: rng.range(0.75, 1.45),
+                kind,
+            });
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy)]
 pub struct TreeInstance {
     pub x: f32,
@@ -154,6 +237,7 @@ pub fn scatter(
     slope: &[f32],
     moisture: &[f32],
     water: &[f32],
+    trails: &[f32],
     p: &ForestParams,
 ) -> Vec<TreeInstance> {
     let ext = hf.extent();
@@ -179,10 +263,13 @@ pub fn scatter(
             if h < p.water_level + 0.6 || s > p.max_slope {
                 continue;
             }
-            // No trees in (or right at the rim of) mountain lakes.
+            // No trees in (or right at the rim of) mountain lakes, none on the trails.
             let wi = ((wz / hf.cell) as usize).min(hf.size - 1) * hf.size
                 + ((wx / hf.cell) as usize).min(hf.size - 1);
             if water[wi].is_finite() && h < water[wi] + 0.4 {
+                continue;
+            }
+            if trails[wi] > 0.40 {
                 continue;
             }
             // Treeline: thin over the last 25 m, hard stop above.
@@ -264,12 +351,16 @@ mod tests {
         (hf, slope, moist, water)
     }
 
+    fn no_trails() -> Vec<f32> {
+        vec![0.0; 256 * 256]
+    }
+
     #[test]
     fn scatter_deterministic_and_valid() {
         let (hf, slope, moist, water) = world();
         let p = ForestParams::default();
-        let a = scatter(&hf, &slope, &moist, &water, &p);
-        let b = scatter(&hf, &slope, &moist, &water, &p);
+        let a = scatter(&hf, &slope, &moist, &water, &no_trails(), &p);
+        let b = scatter(&hf, &slope, &moist, &water, &no_trails(), &p);
         assert_eq!(a.len(), b.len());
         assert!(!a.is_empty(), "no trees scattered");
         for (x, y) in a.iter().zip(&b) {
@@ -288,11 +379,11 @@ mod tests {
     fn density_scales_count() {
         let (hf, slope, moist, water) = world();
         let lo = scatter(
-            &hf, &slope, &moist, &water,
+            &hf, &slope, &moist, &water, &no_trails(),
             &ForestParams { density: 0.2, ..Default::default() },
         );
         let hi = scatter(
-            &hf, &slope, &moist, &water,
+            &hf, &slope, &moist, &water, &no_trails(),
             &ForestParams { density: 0.9, ..Default::default() },
         );
         assert!(hi.len() > lo.len() * 2, "hi={} lo={}", hi.len(), lo.len());
@@ -306,6 +397,7 @@ mod tests {
             &slope,
             &moist,
             &water,
+            &no_trails(),
             &ForestParams { species_weights: [0.0; 4], ..Default::default() },
         );
         assert!(none.is_empty());

@@ -8,11 +8,12 @@ pub mod maps;
 pub mod noise;
 pub mod rng;
 pub mod scatter;
+pub mod trails;
 pub mod tree;
 
 pub use erosion::ErosionParams;
 pub use heightfield::{HeightField, TerrainParams};
-pub use scatter::{ForestParams, RockInstance, TreeInstance};
+pub use scatter::{ForestParams, PropInstance, RockInstance, TreeInstance};
 pub use tree::{ALL_SPECIES, Species, TreeSkeleton};
 
 #[derive(Clone, Copy)]
@@ -40,8 +41,11 @@ pub struct World {
     /// Per-cell lake surface height, `NEG_INFINITY` where dry (priority-flood).
     pub water: Vec<f32>,
     pub lake_count: usize,
+    /// Per-cell trail wear 0..1 (1 = beaten path core).
+    pub trails: Vec<f32>,
     pub trees: Vec<TreeInstance>,
     pub rocks: Vec<RockInstance>,
+    pub props: Vec<PropInstance>,
 }
 
 /// Full pipeline. `progress(fraction, stage_label)` is called from the worker thread.
@@ -60,9 +64,13 @@ pub fn generate(p: &WorldParams, mut progress: impl FnMut(f32, &str)) -> World {
     progress(0.80, "derived maps");
     let slope = maps::slope_map(&height);
     let moisture = maps::moisture_map(&height, &flow, &ws.surface, p.forest.water_level);
-    progress(0.88, "scatter");
-    let trees = scatter::scatter(&height, &slope, &moisture, &ws.surface, &p.forest);
+    progress(0.84, "trails");
+    let trails = trails::build_trails(&height, &slope, &ws.surface, p.terrain.seed);
+    progress(0.90, "scatter");
+    let trees = scatter::scatter(&height, &slope, &moisture, &ws.surface, &trails, &p.forest);
     let rocks = scatter::scatter_rocks(&height, &slope, &ws.surface, p.terrain.seed);
+    let props =
+        scatter::scatter_props(&height, &slope, &moisture, &ws.surface, &trails, &p.forest);
     progress(1.0, "done");
     World {
         height,
@@ -71,8 +79,10 @@ pub fn generate(p: &WorldParams, mut progress: impl FnMut(f32, &str)) -> World {
         flow,
         water: ws.surface,
         lake_count: ws.lake_count,
+        trails,
         trees,
         rocks,
+        props,
     }
 }
 

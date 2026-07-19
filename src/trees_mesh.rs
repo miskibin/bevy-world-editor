@@ -349,14 +349,11 @@ impl Plugin for TreeAssetsPlugin {
     }
 }
 
-fn drive_leaf_time(
-    time: Res<Time>,
-    assets: Option<Res<TreeAssets>>,
-    mut mats: ResMut<Assets<LeafMaterial>>,
-) {
-    let Some(assets) = assets else { return };
-    if let Some(mut mat) = mats.get_mut(&assets.leaf_mat) {
-        mat.extension.params.x = time.elapsed_secs();
+fn drive_leaf_time(time: Res<Time>, mut mats: ResMut<Assets<LeafMaterial>>) {
+    // Every LeafSway material sways on the same clock (tree leaves, grass, bushes).
+    let t = time.elapsed_secs();
+    for (_, mat) in mats.iter_mut() {
+        mat.extension.params.x = t;
     }
 }
 
