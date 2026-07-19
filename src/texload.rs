@@ -21,7 +21,9 @@ pub fn repeat_sampler() -> ImageSampler {
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
-        anisotropy_clamp: 8,
+        // 16: at a 1.5 m eye height the ground is ALL grazing angles — 8 still smeared
+        // the splat into beige a few metres out.
+        anisotropy_clamp: 16,
         ..default()
     })
 }

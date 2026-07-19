@@ -134,6 +134,7 @@ pub const PROP_BUSH_BROADLEAF: u8 = 0;
 pub const PROP_BUSH_BIRCH: u8 = 1;
 pub const PROP_LOG: u8 = 2;
 pub const PROP_STUMP: u8 = 3;
+pub const PROP_MUSHROOM: u8 = 4;
 
 #[derive(Clone, Copy)]
 pub struct PropInstance {
@@ -191,11 +192,15 @@ pub fn scatter_props(
             let m = moisture[i];
             let bush_p = edge * 0.35 + if in_forest { 0.015 } else { 0.030 * m };
             let log_p = if in_forest { 0.020 } else { 0.0 };
+            // Mushroom clusters on the moist forest floor (and a few at shady edges).
+            let shroom_p = if in_forest && m > 0.35 { 0.040 } else { edge * 0.010 };
             let r = rng.f32();
             let kind = if r < bush_p {
                 if rng.chance(0.6) { PROP_BUSH_BROADLEAF } else { PROP_BUSH_BIRCH }
             } else if r < bush_p + log_p {
                 if rng.chance(0.72) { PROP_LOG } else { PROP_STUMP }
+            } else if r < bush_p + log_p + shroom_p {
+                PROP_MUSHROOM
             } else {
                 continue;
             };

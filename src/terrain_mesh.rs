@@ -116,15 +116,23 @@ fn rebuild_on_ready(
     }
     info!("lakes: {} ({} water chunks)", w.lake_count, lake_chunks);
     // Staging aid: a world-space point on a beaten trail (WED_EYE/WED_CAM target).
-    // Scan from mid-map so the sample isn't a border cell.
-    if let Some(i) = w.trails[size * size / 2..].iter().position(|&t| t > 0.9) {
-        let i = i + size * size / 2;
-        let off = world_offset(&w.height);
-        info!(
-            "trail sample at world ({:.0}, {:.0})",
-            (i % size) as f32 + off,
-            (i / size) as f32 + off
-        );
+    // Several spread-out beaten-trail samples (staging aid) — prefer DRY meadow spots
+    // (no lake within the halo) so the coords land on a scenic path, not a shore flat.
+    let off = world_offset(&w.height);
+    for k in 1..6usize {
+        let start = size * size * k / 6;
+        if let Some(i) = w.trails[start..].iter().position(|&t| t > 0.9) {
+            let i = i + start;
+            let near_lake = (0..5).any(|d| {
+                w.water.get(i + d * 8).map(|s| s.is_finite()).unwrap_or(false)
+                    || w.water.get(i.saturating_sub(d * 8)).map(|s| s.is_finite()).unwrap_or(false)
+            });
+            info!(
+                "trail sample {k} at world ({:.0}, {:.0}) lake_near={near_lake}",
+                (i % size) as f32 + off,
+                (i / size) as f32 + off
+            );
+        }
     }
 }
 

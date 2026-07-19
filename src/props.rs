@@ -8,7 +8,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use worldgen::Species;
 use worldgen::rng::Rng;
-use worldgen::scatter::{PROP_BUSH_BIRCH, PROP_LOG, PROP_STUMP};
+use worldgen::scatter::{PROP_BUSH_BIRCH, PROP_LOG, PROP_MUSHROOM, PROP_STUMP};
 
 use crate::foliage;
 use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
@@ -103,11 +103,72 @@ fn log_data(seed: u32, stump: bool) -> MeshData {
     md
 }
 
+/// Mushroom cluster: 3–5 toadstools (4-side stem + 6-side flattened cone cap), colours
+/// in vertex colours (rendered with a plain white material).
+fn mushroom_data(seed: u32) -> MeshData {
+    let mut md = MeshData::default();
+    let mut rng = Rng::new(seed);
+    let n = 3 + (rng.next_u32() % 3);
+    for _ in 0..n {
+        let base = Vec3::new(rng.signed() * 0.35, 0.0, rng.signed() * 0.35);
+        let h = rng.range(0.08, 0.22);
+        let cap_r = h * rng.range(0.9, 1.4);
+        let stem_r = cap_r * 0.28;
+        let cap_col = if rng.chance(0.4) {
+            [0.62, 0.18, 0.10, 1.0] // red-brown toadstool
+        } else if rng.chance(0.5) {
+            [0.55, 0.40, 0.24, 1.0] // tan
+        } else {
+            [0.80, 0.74, 0.62, 1.0] // cream
+        };
+        let stem_col = [0.85, 0.80, 0.70, 1.0];
+        // Stem: 4-side tube.
+        let s0 = md.positions.len() as u32;
+        for (y, r) in [(0.0f32, stem_r * 1.15), (h, stem_r)] {
+            for k in 0..=4u32 {
+                let a = k as f32 / 4.0 * std::f32::consts::TAU;
+                let nrm = Vec3::new(a.cos(), 0.0, a.sin());
+                md.positions.push((base + nrm * r + Vec3::Y * y).to_array());
+                md.normals.push(nrm.to_array());
+                md.uvs.push([0.0, 0.0]);
+                md.colors.push(stem_col);
+            }
+        }
+        for k in 0..4u32 {
+            md.indices.extend_from_slice(&[
+                s0 + k, s0 + 5 + k, s0 + k + 1,
+                s0 + k + 1, s0 + 5 + k, s0 + 5 + k + 1,
+            ]);
+        }
+        // Cap: 6-side flattened cone (rim ring → apex), slight overhang.
+        let c0 = md.positions.len() as u32;
+        let apex = base + Vec3::Y * (h + cap_r * 0.55);
+        for k in 0..=6u32 {
+            let a = k as f32 / 6.0 * std::f32::consts::TAU;
+            let nrm = Vec3::new(a.cos() * 0.8, 0.6, a.sin() * 0.8);
+            md.positions.push((base + Vec3::new(a.cos(), 0.0, a.sin()) * cap_r + Vec3::Y * h * 0.95).to_array());
+            md.normals.push(nrm.to_array());
+            md.uvs.push([0.0, 0.0]);
+            md.colors.push(cap_col);
+        }
+        let ai = md.positions.len() as u32;
+        md.positions.push(apex.to_array());
+        md.normals.push([0.0, 1.0, 0.0]);
+        md.uvs.push([0.0, 0.0]);
+        md.colors.push([cap_col[0] * 1.15, cap_col[1] * 1.15, cap_col[2] * 1.1, 1.0]);
+        for k in 0..6u32 {
+            md.indices.extend_from_slice(&[c0 + k, ai, c0 + k + 1]);
+        }
+    }
+    md
+}
+
 fn rebuild_on_ready(
     world: Option<Res<GeneratedWorld>>,
     assets: Option<Res<TreeAssets>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let (Some(world), Some(assets)) = (world, assets) else { return };
     if !world.is_changed() {
@@ -124,9 +185,11 @@ fn rebuild_on_ready(
     ];
     let logs = [log_data(5, false), log_data(9, false)];
     let stump = log_data(3, true);
+    let shrooms = [mushroom_data(2), mushroom_data(6), mushroom_data(14)];
 
     let mut leafy: HashMap<(i32, i32), MeshData> = HashMap::default();
     let mut woody: HashMap<(i32, i32), MeshData> = HashMap::default();
+    let mut plain: HashMap<(i32, i32), MeshData> = HashMap::default();
     for p in &world.0.props {
         let key = (((p.x + off) / CHUNK_M).floor() as i32, ((p.z + off) / CHUNK_M).floor() as i32);
         let pos = Vec3::new(p.x + off, p.y - 0.05, p.z + off);
@@ -140,6 +203,12 @@ fn rebuild_on_ready(
             k if k == PROP_STUMP => {
                 woody.entry(key).or_default().append_transformed(&stump, pos, p.yaw, p.scale)
             }
+            k if k == PROP_MUSHROOM => plain.entry(key).or_default().append_transformed(
+                &shrooms[(p.x as u32 % 3) as usize],
+                Vec3::new(p.x + off, p.y, p.z + off),
+                p.yaw,
+                p.scale,
+            ),
             k => {
                 let idx = if k == PROP_BUSH_BIRCH { 2 } else { 0 } + (p.x as u32 % 2) as usize;
                 leafy.entry(key).or_default().append_transformed(&bushes[idx], pos, p.yaw, p.scale)
@@ -152,11 +221,18 @@ fn rebuild_on_ready(
         end_margin: PROP_FAR..PROP_FAR + 40.0,
         use_aabb: true,
     };
+    // Mushrooms: plain vertex-colour material, tighter cull (they're ankle-height).
+    let plain_mat = mats.add(StandardMaterial {
+        perceptual_roughness: 0.85,
+        reflectance: 0.15,
+        ..default()
+    });
     let mut count = 0;
-    for (data, leaf) in leafy
+    for (data, kind) in leafy
         .values()
-        .map(|d| (d, true))
-        .chain(woody.values().map(|d| (d, false)))
+        .map(|d| (d, 0u8))
+        .chain(woody.values().map(|d| (d, 1)))
+        .chain(plain.values().map(|d| (d, 2)))
     {
         if data.positions.is_empty() {
             continue;
@@ -164,18 +240,27 @@ fn rebuild_on_ready(
         count += 1;
         let mesh = data.to_mesh();
         let aabb = mesh.compute_aabb();
+        let this_range = if kind == 2 {
+            VisibilityRange {
+                start_margin: 0.0..0.0,
+                end_margin: 90.0..110.0,
+                use_aabb: true,
+            }
+        } else {
+            range.clone()
+        };
         let mut e = commands.spawn((
             Mesh3d(meshes.add(mesh)),
             Transform::default(),
             WorldEntity,
             NotShadowCaster,
-            range.clone(),
+            this_range,
         ));
-        if leaf {
-            e.insert(MeshMaterial3d(assets.leaf_mat.clone()));
-        } else {
-            e.insert(MeshMaterial3d(assets.bark_mats[2].clone()));
-        }
+        match kind {
+            0 => e.insert(MeshMaterial3d(assets.leaf_mat.clone())),
+            1 => e.insert(MeshMaterial3d(assets.bark_mats[2].clone())),
+            _ => e.insert(MeshMaterial3d(plain_mat.clone())),
+        };
         if let Some(aabb) = aabb {
             e.insert(aabb);
         }

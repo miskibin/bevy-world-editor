@@ -14,6 +14,7 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_view_bindings::view,
 }
 
 struct TerrainParams {
@@ -182,10 +183,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // with a ragged noise-broken edge so the path never reads as a painted stripe.
     if trail > 0.01 {
         let ragged = trail * (0.80 + 0.4 * patch_noise(wp.xz * 0.9));
-        let lane = smoothstep(0.12, 0.55, ragged);
+        let lane = smoothstep(0.18, 0.62, ragged);
         let dirt = sample_planar(3, wp);
-        // Lighter, dustier than plain dirt so the lane reads against every layer.
-        albedo = mix(albedo, dirt * vec4<f32>(1.22, 1.12, 0.96, 1.0), lane);
+        // Dusty but NOT flat: fine gravel grain re-sampled at ~0.8 m keeps the beaten
+        // lane readable up close (a plain brightened dirt sample smeared into beige).
+        let g =
+            textureSampleBias(albedo_arr, albedo_samp, wp.xz * ter.params.x * 5.2 + 0.87, 3, -1.75)
+                .rgb;
+        let grain = 0.6 + 0.8 * dot(g, vec3<f32>(0.299, 0.587, 0.114));
+        albedo = mix(albedo, dirt * vec4<f32>(1.10 * grain, 1.04 * grain, 0.94 * grain, 1.0), lane);
     }
 
     // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
@@ -201,6 +207,28 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let tw = twig_field(wp.xz);
         let bark = vec3<f32>(0.26, 0.18, 0.11) * (0.75 + tw.y * 0.5);
         albedo = vec4<f32>(mix(albedo.rgb, bark, min(tw.x * ff_w * 1.2, 1.0)), 1.0);
+    }
+
+    // ── Near-camera detail pass — the cure for "mushy ground at your feet". The base
+    // tiling (~4 m) is right at mid distance but has no high-frequency content up close,
+    // so within ~15 m we overlay the SAME textures re-sampled at ~0.8 m tiling
+    // (luminance-only overlay: no visible re-tiling, just crisp grain).
+    let cam_d = length(view.world_position.xyz - wp);
+    let near_w = 1.0 - smoothstep(5.0, 16.0, cam_d);
+    if near_w > 0.01 {
+        let s3 = ter.params.x * 5.2; // ~0.8 m tiling
+        // Negative mip bias: at a standing-height grazing angle the hardware picks
+        // mush-tier mips even for this near overlay — bias it back toward sharp.
+        let s_b = -1.75;
+        let sd = textureSampleBias(albedo_arr, albedo_samp, wp.xz * s3, 0, s_b).rgb * grass_w
+            + textureSampleBias(albedo_arr, albedo_samp, wp.xz * s3 + 0.31, 1, s_b).rgb * ff_w
+            + textureSampleBias(albedo_arr, albedo_samp, wp.xz * s3 + 0.62, 2, s_b).rgb * rock_w
+            + textureSampleBias(albedo_arr, albedo_samp, wp.xz * s3 + 0.87, 3, s_b).rgb * dirt_w;
+        let lum = dot(sd, vec3<f32>(0.299, 0.587, 0.114));
+        albedo = vec4<f32>(
+            mix(albedo.rgb, albedo.rgb * (0.55 + 0.95 * lum), 0.8 * near_w),
+            1.0,
+        );
     }
 
     // Faint large-scale value drift — cures the "one flat green" read at distance.
@@ -238,7 +266,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // normal; baked soft shadow in the SAME field's hollows carves depth that a tilted
     // normal alone can't give (ambient hits every direction). Top faces only; trails
     // flatten it (trodden ground is packed smooth).
-    let topw = smoothstep(0.35, 0.80, gn.y) * (1.0 - trail * 0.7);
+    // Trails only SOFTEN the relief (0.35), never erase it — a fully-flattened wide
+    // lane read as a featureless beige smear.
+    let topw = smoothstep(0.35, 0.80, gn.y) * (1.0 - trail * 0.35);
     if topw > 0.001 {
         let e = 0.18;
         let hx = terrain_h(wp.xz + vec2<f32>(e, 0.0)) - terrain_h(wp.xz - vec2<f32>(e, 0.0));
