@@ -170,36 +170,29 @@ fn tube(md: &mut MeshData, seg: &Segment, sides: u32, bark_uv: Option<(f32, f32,
 
 /// Leaf cards: two crossed quads per anchor (at LOD0) or one (lower LODs), UV = the
 /// species' atlas leaf region, normals = the anchor's outward direction.
-fn build_leaves_varied(
+/// Sprig cards, EZ-Tree style: a base-pivot quad growing OUT of the branch tip along
+/// its tangent (the photographic twig texture has its stem base at bottom-centre), width
+/// = length, optionally a second perpendicular quad ("Double"/cross — holds up close,
+/// unlike camera billboards). Normals are ROUNDED per vertex — bent away from the canopy
+/// centre — so hundreds of flat cards light as one soft volume.
+fn build_sprigs(
     sk: &TreeSkeleton,
     sp: Species,
     every: usize,
     size_mul: f32,
     crossed: bool,
-    vary: bool,
     tint: [f32; 3],
 ) -> MeshData {
     let mut md = MeshData::default();
     let region = foliage::leaf_uv(sp);
+    let canopy = Vec3::from_array(sk.canopy_center);
     for (i, l) in sk.leaves.iter().enumerate() {
         if i % every != 0 {
             continue;
         }
-        // Near LODs sample a random HALF-SIZE window of the cluster texture per card:
-        // smaller cards + varied crops read as individual leafy boughs up close, where a
-        // full identical cluster repeated on every card reads as wallpaper.
-        let uv = if vary {
-            let h1 = (l.pos[0] * 12.9898 + l.pos[1] * 78.233).sin().abs().fract() * 0.5;
-            let h2 = (l.pos[2] * 39.425 + l.pos[1] * 11.135).sin().abs().fract() * 0.5;
-            let (u0, v0, u1, v1) = region;
-            let (du, dv) = (u1 - u0, v1 - v0);
-            (u0 + du * h1, v0 + dv * h2, u0 + du * (h1 + 0.5), v0 + dv * (h2 + 0.5))
-        } else {
-            region
-        };
         let n_quads = if crossed { 2 } else { 1 };
         for q in 0..n_quads {
-            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, uv, tint);
+            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, region, tint, canopy);
         }
     }
     md
@@ -212,33 +205,39 @@ fn card(
     roll: f32,
     uv: (f32, f32, f32, f32),
     tint: [f32; 3],
+    canopy: Vec3,
 ) {
     let dir = Vec3::from_array(l.dir).normalize_or_zero();
     let dir = if dir == Vec3::ZERO { Vec3::Y } else { dir };
-    let (mut u, mut v) = ortho_frame(dir);
-    // Roll the card frame around its normal for the crossed second quad.
+    let (u, _) = ortho_frame(dir);
+    // Roll the card plane around the growth axis (crossed pair + per-sprig variety).
     let rot = Quat::from_axis_angle(dir, roll + l.pos[0] * 1.7 + l.pos[2] * 2.3);
-    u = rot * u;
-    v = rot * v;
-    let half = l.size * size_mul * 0.5;
-    let c = Vec3::from_array(l.pos);
+    let u = rot * u;
+    let len = l.size * size_mul;
+    let half_w = len * 0.5;
+    let c = Vec3::from_array(l.pos); // BASE pivot — the sprig grows from the branch tip
     let base = md.positions.len() as u32;
     // Per-card brightness/hue wobble on top of the variant tint — breaks up the crown.
-    let j = 0.86 + ((l.pos[0] * 47.1 + l.pos[1] * 9.7 + l.pos[2] * 23.3).sin().abs()) * 0.28;
+    let j = 0.88 + ((l.pos[0] * 47.1 + l.pos[1] * 9.7 + l.pos[2] * 23.3).sin().abs()) * 0.24;
     let col = [
         (tint[0] * j).min(2.0),
         (tint[1] * (0.9 + j * 0.1)).min(2.0),
         (tint[2] * j * 0.95).min(2.0),
         1.0,
     ];
-    for (su, sv, uu, vv) in [
-        (-1.0f32, -1.0f32, uv.0, uv.3),
-        (1.0, -1.0, uv.2, uv.3),
+    let face = u.cross(dir).normalize_or_zero();
+    // (side, along, u, v): texture base (v max) sits at the pivot.
+    for (su, sa, uu, vv) in [
+        (-1.0f32, 0.0f32, uv.0, uv.3),
+        (1.0, 0.0, uv.2, uv.3),
         (1.0, 1.0, uv.2, uv.1),
         (-1.0, 1.0, uv.0, uv.1),
     ] {
-        md.positions.push((c + u * su * half + v * sv * half).to_array());
-        md.normals.push(dir.to_array());
+        let p = c + u * su * half_w + dir * sa * len;
+        // Rounded normal: outward from the canopy centre blended with the card facing.
+        let n = ((p - canopy).normalize_or_zero() * 0.75 + face * 0.35).normalize_or_zero();
+        md.positions.push(p.to_array());
+        md.normals.push((if n == Vec3::ZERO { dir } else { n }).to_array());
         md.uvs.push([uu, vv]);
         md.colors.push(col);
     }
@@ -249,7 +248,7 @@ fn card(
 fn build_lod2(sk: &TreeSkeleton, sp: Species, var: usize) -> MeshData {
     let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)), wood_tint(sp, var));
     let every = (sk.leaves.len() / 11).max(1);
-    let leaves = build_leaves_varied(sk, sp, every, 3.9, false, false, foliage_tint(sp, var));
+    let leaves = build_sprigs(sk, sp, every, 2.6, false, foliage_tint(sp, var));
     let base = md.positions.len() as u32;
     md.positions.extend_from_slice(&leaves.positions);
     md.normals.extend_from_slice(&leaves.normals);
@@ -324,7 +323,8 @@ fn build_tree_assets(
     let atlas = images.add(foliage::build_atlas());
     let leaf_mat = mats.add(StandardMaterial {
         base_color_texture: Some(atlas),
-        alpha_mode: AlphaMode::Mask(0.42),
+        // 0.33 clip (UE guidance): higher clips erode mip'd leaves to nothing at distance.
+        alpha_mode: AlphaMode::Mask(0.33),
         perceptual_roughness: 0.9,
         reflectance: 0.12,
         double_sided: true,
@@ -361,13 +361,11 @@ fn build_tree_assets(
             let wt = wood_tint(sp, var);
             per_variant.push(VariantMeshes {
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None, wt).to_mesh()),
-                lod0_leaf: meshes
-                    .add(build_leaves_varied(&sk, sp, 1, 0.9, true, true, ft).to_mesh()),
+                lod0_leaf: meshes.add(build_sprigs(&sk, sp, 1, 1.0, true, ft).to_mesh()),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None, wt).to_mesh()),
-                // Uncrossed + every-3rd: the LOD1 ring holds the most trees on screen, so
-                // its per-tree quad count decides the frame budget.
-                lod1_leaf: meshes
-                    .add(build_leaves_varied(&sk, sp, 3, 2.1, false, true, ft).to_mesh()),
+                // Uncrossed + every-2nd, upsized: the LOD1 ring holds the most trees on
+                // screen, so its per-tree quad count decides the frame budget.
+                lod1_leaf: meshes.add(build_sprigs(&sk, sp, 2, 1.45, false, ft).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
             });

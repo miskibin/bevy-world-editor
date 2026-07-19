@@ -107,13 +107,13 @@ fn grow_axis(
         let t0 = i as f32 / nseg as f32;
         let t1 = (i + 1) as f32 / nseg as f32;
         samples.push((pos, d, t0));
+        // EZ-Tree trick: gnarl amplitude scales ~1/sqrt(radius), so thin twigs wander
+        // hard while the trunk stays stately — a big chunk of "real tree" silhouette.
+        let r_cur = (r0 + (r1 - r0) * t0).max(1e-3);
+        let g = gnarl * (1.0 / r_cur.sqrt()).clamp(1.0, 3.0);
         d = norm3(add3(
             d,
-            [
-                rng.signed() * gnarl,
-                tropism + rng.signed() * gnarl * 0.4,
-                rng.signed() * gnarl,
-            ],
+            [rng.signed() * g, tropism + rng.signed() * g * 0.4, rng.signed() * g],
         ));
         let next = add3(pos, scale3(d, step));
         out.push(Segment {
@@ -156,13 +156,13 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
                 let tips = grow_axis(
                     &mut segments, &mut rng, bp, bdir, blen, br, br * 0.15, 1, 4, 0.10, 0.020,
                 );
-                // Needle fronds along the outer 60% of each crown branch.
+                // Needle sprays on the outer half of each crown branch.
                 for &(p, d, t) in &tips {
                     if t > 0.4 {
                         leaves.push(LeafAnchor {
                             pos: p,
-                            dir: norm3(add3(d, [0.0, 0.55, 0.0])),
-                            size: rng.range(1.1, 1.7),
+                            dir: norm3(add3(d, [0.0, 0.35, 0.0])),
+                            size: h * rng.range(0.09, 0.15),
                         });
                     }
                 }
@@ -193,11 +193,11 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
                         &mut segments, &mut rng, bp, bdir, blen, br, br * 0.12, 1, 3, 0.06, -0.045,
                     );
                     for &(p, d, tt) in &tips {
-                        if tt > 0.25 {
+                        if tt > 0.4 {
                             leaves.push(LeafAnchor {
                                 pos: p,
-                                dir: norm3(add3(d, [0.0, -0.3, 0.0])),
-                                size: rng.range(0.9, 1.5) * (0.5 + 0.6 * cone),
+                                dir: norm3(add3(d, [0.0, -0.25, 0.0])),
+                                size: h * rng.range(0.06, 0.11) * (0.5 + 0.6 * cone),
                             });
                         }
                     }
@@ -205,42 +205,55 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
             }
         }
         Species::Broadleaf => {
+            // Oak/beech habit: ONE continuous trunk with scaffold limbs distributed
+            // along its upper 55% (the old bole-splits-into-candelabra read as fake),
+            // lower limbs wide and long, upper steep and short → rounded crown.
             let h = rng.range(13.0, 19.0);
-            let r = h * 0.030;
-            let bole_h = h * rng.range(0.28, 0.38);
+            let r = h * 0.028;
             let lean = [rng.signed() * 0.05, 1.0, rng.signed() * 0.05];
             let trunk = grow_axis(
                 &mut segments, &mut rng, [0.0; 3], lean,
-                bole_h, r, r * 0.72, 0, 4, 0.05, 0.0,
+                h * 0.72, r, r * 0.10, 0, 8, 0.045, 0.012,
             );
-            let (top, tdir, _) = trunk[trunk.len() - 1];
-            let n_scaffold = 3 + (rng.next_u32() % 3);
+            let n_scaffold = 6 + (rng.next_u32() % 4);
             for s in 0..n_scaffold {
-                let az = s as f32 / n_scaffold as f32 * std::f32::consts::TAU
-                    + rng.range(0.0, 0.9);
-                let sdir = cone_dir(tdir, rng.range(0.5, 0.85), az);
-                let slen = (h - bole_h) * rng.range(0.75, 1.0);
-                let sr = r * 0.55;
+                let t = 0.45 + 0.53 * (s as f32 + rng.f32() * 0.8) / n_scaffold as f32;
+                let (bp, bd, _) = trunk[((t * 8.0) as usize).min(8)];
+                let k = (t - 0.45) / 0.53; // 0 low … 1 top
+                // Radial slot + jitter (decorrelated from height, EZ permutation idea).
+                let az = s as f32 * 2.39996 + rng.signed() * 0.5; // golden angle
+                let sdir = cone_dir(bd, 1.15 - 0.55 * k + rng.signed() * 0.12, az);
+                let slen = h * 0.42 * (1.0 - 0.45 * k) * rng.range(0.85, 1.15);
+                let sr = r * 0.42 * (1.0 - 0.35 * k);
                 let limb = grow_axis(
-                    &mut segments, &mut rng, top, sdir, slen, sr, sr * 0.25, 1, 5, 0.09, 0.028,
+                    &mut segments, &mut rng, bp, sdir, slen, sr, sr * 0.08, 1, 5, 0.10, 0.030,
                 );
-                // Twigs off each scaffold limb, each carrying a leaf-cluster cloud.
-                let n_twigs = 4 + (rng.next_u32() % 3);
+                for &(p, d, tt) in &limb {
+                    if tt > 0.55 {
+                        leaves.push(LeafAnchor {
+                            pos: p,
+                            dir: d,
+                            size: h * rng.range(0.12, 0.22),
+                        });
+                    }
+                }
+                let n_twigs = 2 + (rng.next_u32() % 3);
                 for _ in 0..n_twigs {
-                    let t = rng.range(0.35, 1.0);
-                    let (tp, td, _) = limb[((t * 5.0) as usize).min(5)];
-                    let tdir2 = cone_dir(td, rng.range(0.5, 1.1), rng.range(0.0, std::f32::consts::TAU));
-                    let tlen = slen * rng.range(0.35, 0.55);
+                    let tt = rng.range(0.45, 0.95);
+                    let (tp, td, _) = limb[((tt * 5.0) as usize).min(5)];
+                    let tdir2 =
+                        cone_dir(td, rng.range(0.45, 0.95), rng.range(0.0, std::f32::consts::TAU));
+                    let tlen = slen * rng.range(0.30, 0.50);
                     let tips = grow_axis(
-                        &mut segments, &mut rng, tp, tdir2, tlen, sr * 0.3, sr * 0.06, 2, 3, 0.12,
-                        0.030,
+                        &mut segments, &mut rng, tp, tdir2, tlen, sr * 0.25, sr * 0.03, 2, 3,
+                        0.14, 0.035,
                     );
-                    for &(p, _d, tt) in &tips {
-                        if tt > 0.3 {
+                    for &(p, d, t3) in &tips {
+                        if t3 > 0.35 {
                             leaves.push(LeafAnchor {
                                 pos: p,
-                                dir: [0.0, 1.0, 0.0], // fixed up post-pass below
-                                size: rng.range(1.6, 2.4),
+                                dir: d,
+                                size: h * rng.range(0.11, 0.21),
                             });
                         }
                     }
@@ -269,12 +282,12 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
                 let tips = grow_axis(
                     &mut segments, &mut rng, bp, bdir, blen, br, br * 0.10, 1, 4, 0.10, -0.060,
                 );
-                for &(p, _d, tt) in &tips {
-                    if tt > 0.45 {
+                for &(p, d, tt) in &tips {
+                    if tt > 0.55 {
                         leaves.push(LeafAnchor {
                             pos: p,
-                            dir: [0.0, 1.0, 0.0],
-                            size: rng.range(1.0, 1.6),
+                            dir: d,
+                            size: h * rng.range(0.08, 0.14),
                         });
                     }
                 }
@@ -282,32 +295,9 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
         }
     }
 
-    // Densify: real close-up canopies need leaf MASS, not a card per branch tip — clone
-    // each anchor with jittered offsets so LOD0 renders a packed crown.
-    let (clones, jit) = match species {
-        Species::Broadleaf => (2, 0.55),
-        Species::Birch => (2, 0.45),
-        Species::Pine => (1, 0.40),
-        Species::Spruce => (1, 0.30),
-    };
-    let originals = leaves.len();
-    for i in 0..originals {
-        let l = leaves[i];
-        for _ in 0..clones {
-            leaves.push(LeafAnchor {
-                pos: [
-                    l.pos[0] + rng.signed() * jit,
-                    l.pos[1] + rng.signed() * jit * 0.7,
-                    l.pos[2] + rng.signed() * jit,
-                ],
-                dir: norm3(add3(l.dir, [rng.signed() * 0.3, rng.signed() * 0.3, rng.signed() * 0.3])),
-                size: l.size * rng.range(0.75, 1.0),
-            });
-        }
-    }
-
-    // Canopy stats + broadleaf/birch leaf normals bent outward from the canopy centroid
-    // ("spherical normals") so cards light as one soft volume, not a heap of flat quads.
+    // NB: no anchor densification and no dir-bending here — each anchor now carries a
+    // WHOLE photographic sprig (base-pivot card growing along the branch tangent), and
+    // "soft volume" lighting comes from per-vertex rounded normals in the mesh builder.
     let (mut cx, mut cy, mut cz) = (0.0f32, 0.0f32, 0.0f32);
     for l in &leaves {
         cx += l.pos[0];
@@ -317,16 +307,10 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
     let n = leaves.len().max(1) as f32;
     let center = [cx / n, cy / n, cz / n];
     let mut radius = 0.0f32;
-    for l in &mut leaves {
-        let out = [
-            l.pos[0] - center[0],
-            l.pos[1] - center[1] + 0.5,
-            l.pos[2] - center[2],
-        ];
+    for l in &leaves {
+        let out =
+            [l.pos[0] - center[0], l.pos[1] - center[1] + 0.5, l.pos[2] - center[2]];
         radius = radius.max((out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt());
-        if matches!(species, Species::Broadleaf | Species::Birch) {
-            l.dir = norm3(add3(norm3(out), scale3(l.dir, 0.4)));
-        }
     }
 
     let height = segments
@@ -378,8 +362,10 @@ mod tests {
             for seed in 0..8 {
                 let t = grow(sp, seed);
                 assert!(t.height > 10.0 && t.height < 30.0, "{sp:?} height {}", t.height);
-                assert!(t.leaves.len() > 40, "{sp:?} only {} leaves", t.leaves.len());
-                assert!(t.leaves.len() < 2500, "{sp:?} leaf explosion");
+                // Sprig-card era: each anchor is a WHOLE photographic twig, so healthy
+                // counts are tens, not hundreds (EZ-Tree ships full oaks at ~200 sprigs).
+                assert!(t.leaves.len() > 18, "{sp:?} only {} leaves", t.leaves.len());
+                assert!(t.leaves.len() < 800, "{sp:?} leaf explosion");
                 assert!(t.segments.len() > 10 && t.segments.len() < 3000);
                 assert!(t.canopy_radius > 0.5 && t.canopy_radius.is_finite());
             }

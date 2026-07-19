@@ -18,7 +18,8 @@ use crate::trees_mesh::{MeshData, TreeAssets, species_index};
 
 const CHUNK_M: f32 = 64.0;
 /// LOD swap distances (camera → tree).
-const LOD0_END: f32 = 70.0;
+// UE-research: the full-mesh alpha-card ring is where overdraw lives — keep it tight.
+const LOD0_END: f32 = 48.0;
 const LOD1_END: f32 = 200.0;
 const LOD2_END: f32 = 480.0;
 const LOD_BAND: f32 = 18.0;

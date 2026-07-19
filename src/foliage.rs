@@ -13,11 +13,11 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use worldgen::Species;
 
-pub const ATLAS: u32 = 1024;
-const Q: u32 = 512;
+pub const ATLAS: u32 = 2048;
+const Q: u32 = 1024;
 /// Leaf region height inside a quadrant; below it sits the bark strip.
-pub const LEAF_H: u32 = 432;
-pub const BARK_Y0: u32 = 448;
+pub const LEAF_H: u32 = 928;
+pub const BARK_Y0: u32 = 944;
 
 /// Quadrant origin for a species (pine, spruce, broadleaf, birch → 2×2).
 pub fn quad_origin(sp: Species) -> (u32, u32) {
@@ -241,26 +241,56 @@ fn bark_strip(cv: &mut Canvas, qx: u32, qy: u32, sp: Species, rng: &mut worldgen
     }
 }
 
-/// Build the full foliage atlas image.
+/// The photographic sprig source for a species (EZ-Tree leaf textures, MIT — see
+/// assets/textures/MANIFEST.md). Spruce reuses the pine spray; its vertex tint darkens it.
+fn sprig_file(sp: Species) -> &'static str {
+    match sp {
+        Species::Pine | Species::Spruce => "assets/textures/leaves/pineL.png",
+        Species::Broadleaf => "assets/textures/leaves/oakL.png",
+        Species::Birch => "assets/textures/leaves/aspenL.png",
+    }
+}
+
+/// Build the full foliage atlas image. Preferred path: composite the photographic twig
+/// cutouts (a REAL sprig — visible stem + individually recognizable leaves + gaps — is
+/// what makes a card read as foliage; painted blobs never do). Fallback if the files are
+/// missing: the old procedural clusters.
 pub fn build_atlas() -> Image {
     let mut cv = Canvas::new();
     let mut rng = worldgen::rng::Rng::new(0x0F01_1A6E);
 
     for sp in worldgen::ALL_SPECIES {
         let (qx, qy) = quad_origin(sp);
-        match sp {
-            Species::Pine => cluster_needles(
-                &mut cv, qx, qy, &mut rng, 7, (26.0, 40.0), 2.1, srgb(68, 106, 60),
-            ),
-            Species::Spruce => cluster_needles(
-                &mut cv, qx, qy, &mut rng, 9, (18.0, 28.0), 2.4, srgb(52, 88, 58),
-            ),
-            Species::Broadleaf => cluster_leaves(
-                &mut cv, qx, qy, &mut rng, 130, (38.0, 62.0), srgb(78, 126, 54),
-            ),
-            Species::Birch => cluster_leaves(
-                &mut cv, qx, qy, &mut rng, 170, (22.0, 34.0), srgb(116, 152, 64),
-            ),
+        let blitted = image::open(sprig_file(sp))
+            .map(|img| {
+                let img = image::imageops::resize(
+                    &img.to_rgba8(),
+                    Q,
+                    LEAF_H,
+                    image::imageops::FilterType::Triangle,
+                );
+                for (px, py, p) in img.enumerate_pixels() {
+                    let i = (((qy + py) * ATLAS + qx + px) * 4) as usize;
+                    cv.px[i..i + 4].copy_from_slice(&p.0);
+                }
+            })
+            .is_ok();
+        if !blitted {
+            bevy::log::warn!("sprig texture missing ({}) — procedural fallback", sprig_file(sp));
+            match sp {
+                Species::Pine => cluster_needles(
+                    &mut cv, qx, qy, &mut rng, 7, (52.0, 80.0), 2.1, srgb(68, 106, 60),
+                ),
+                Species::Spruce => cluster_needles(
+                    &mut cv, qx, qy, &mut rng, 9, (36.0, 56.0), 2.4, srgb(52, 88, 58),
+                ),
+                Species::Broadleaf => cluster_leaves(
+                    &mut cv, qx, qy, &mut rng, 130, (76.0, 124.0), srgb(78, 126, 54),
+                ),
+                Species::Birch => cluster_leaves(
+                    &mut cv, qx, qy, &mut rng, 170, (44.0, 68.0), srgb(116, 152, 64),
+                ),
+            }
         }
         bark_strip(&mut cv, qx, qy, sp, &mut rng);
     }
