@@ -16,7 +16,7 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::genrun::{GeneratedWorld, WATER_LEVEL, WorldEntity, WorldReady, world_offset};
+use crate::genrun::{GeneratedWorld, WATER_LEVEL, WorldEntity, world_offset};
 use crate::terrain_mat::GroundMaterial;
 
 pub const CHUNK: usize = 64;
@@ -34,17 +34,20 @@ impl Plugin for TerrainMeshPlugin {
 }
 
 fn rebuild_on_ready(
-    mut ready: MessageReader<WorldReady>,
     world: Option<Res<GeneratedWorld>>,
     ground: Res<GroundMaterial>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut std_mats: ResMut<Assets<StandardMaterial>>,
 ) {
-    if ready.read().next().is_none() {
+    // Change-detection trigger, NOT a message: a message written the same frame the
+    // resource is queued via commands gets consumed by a reader that then early-returns
+    // on the missing resource — and is gone the next frame. is_changed() covers both the
+    // first insert and every regenerate overwrite.
+    let Some(world) = world else { return };
+    if !world.is_changed() {
         return;
     }
-    let Some(world) = world else { return };
     let w = &world.0;
     let size = w.height.size;
     let n_chunks = size / CHUNK;

@@ -80,14 +80,15 @@ fn make_array(layers: Vec<image::RgbaImage>, srgb: bool) -> Image {
             data.extend_from_slice(&level);
         }
     }
-    let mut image = Image::new(
+    // `Image::new` debug-asserts data.len() == mip0 size — mip-chain data needs new_uninit.
+    let mut image = Image::new_uninit(
         Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: n_layers },
         TextureDimension::D2,
-        data,
         if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
         RenderAssetUsages::RENDER_WORLD,
     );
     image.texture_descriptor.mip_level_count = mip_count(TEX_SIZE);
+    image.data = Some(data);
     image.sampler = repeat_sampler();
     image
 }
@@ -99,14 +100,14 @@ pub fn load_single(path: &str, srgb: bool) -> Option<Image> {
     for level in mip_chain_rgba(img.into_raw(), TEX_SIZE, TEX_SIZE) {
         data.extend_from_slice(&level);
     }
-    let mut image = Image::new(
+    let mut image = Image::new_uninit(
         Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        data,
         if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
         RenderAssetUsages::RENDER_WORLD,
     );
     image.texture_descriptor.mip_level_count = mip_count(TEX_SIZE);
+    image.data = Some(data);
     image.sampler = repeat_sampler();
     Some(image)
 }

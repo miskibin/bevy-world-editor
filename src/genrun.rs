@@ -39,9 +39,9 @@ impl Default for GenParams {
 #[derive(Resource, Clone)]
 pub struct GeneratedWorld(pub Arc<worldgen::World>);
 
-/// Fired when a fresh world is ready — spawn modules rebuild on it.
-#[derive(Message)]
-pub struct WorldReady;
+// NB: spawn modules trigger on `Res<GeneratedWorld>` change detection, not a message —
+// a message written the frame the resource is queued races the readers (consumed, then
+// the resource isn't there yet; next frame the message is gone).
 
 #[derive(Resource, Default)]
 pub struct GenProgress {
@@ -60,7 +60,6 @@ impl Plugin for GenPlugin {
         app.init_resource::<GenParams>()
             .init_resource::<GenProgress>()
             .init_resource::<GenTask>()
-            .add_message::<WorldReady>()
             .add_systems(Startup, kick_initial)
             .add_systems(Update, poll_gen);
     }
@@ -98,17 +97,31 @@ fn request_regenerate(
     start_generation(params, task, progress);
 }
 
-// SystemParam-free wrapper so ui.rs can call regenerate without knowing GenTask.
+// Wrapper so ui.rs can trigger a regenerate without knowing GenTask. Deliberately does
+// NOT hold GenParams — the panel already borrows it mutably (B0002 otherwise).
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Regen<'w> {
-    params: Res<'w, GenParams>,
     task: ResMut<'w, GenTask>,
     progress: ResMut<'w, GenProgress>,
 }
 
 impl Regen<'_> {
-    pub fn fire(&mut self) {
-        request_regenerate(&self.params, &mut self.task, &mut self.progress);
+    pub fn fire(&mut self, params: &GenParams) {
+        request_regenerate(params, &mut self.task, &mut self.progress);
+    }
+
+    // The panel reads progress through here too — holding its own Res<GenProgress>
+    // alongside this param is a B0002 access conflict.
+    pub fn running(&self) -> bool {
+        self.progress.running
+    }
+
+    pub fn fraction(&self) -> f32 {
+        self.progress.fraction
+    }
+
+    pub fn stage(&self) -> String {
+        self.progress.stage.clone()
     }
 }
 
@@ -116,8 +129,8 @@ fn poll_gen(
     mut commands: Commands,
     mut task: ResMut<GenTask>,
     mut progress: ResMut<GenProgress>,
-    mut ready: MessageWriter<WorldReady>,
     old: Query<Entity, With<WorldEntity>>,
+    mut cam: Query<(&mut Transform, &mut crate::flycam::FlyCam)>,
 ) {
     let Some((t, shared)) = task.0.as_mut() else { return };
     if let Ok(s) = shared.lock() {
@@ -137,7 +150,46 @@ fn poll_gen(
             world.height.size,
             world.height.size
         );
+        // WED_EYE="x,z,h,tx,tz": eye at terrain height + h over MAP-space (x,z), looking
+        // at terrain level over (tx,tz) — ground-truth staging without knowing heights.
+        if let Some(v) = std::env::var("WED_EYE").ok().map(|s| {
+            s.split(',').filter_map(|p| p.trim().parse::<f32>().ok()).collect::<Vec<_>>()
+        }) {
+            if v.len() == 5 {
+                let hf = &world.height;
+                let off = world_offset(hf);
+                let eye =
+                    Vec3::new(v[0], hf.sample_world(v[0] - off, v[1] - off) + v[2], v[1]);
+                let target =
+                    Vec3::new(v[3], hf.sample_world(v[3] - off, v[4] - off) + v[2], v[4]);
+                for (mut tf, mut fc) in &mut cam {
+                    *tf = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+                    let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                    fc.yaw = yaw;
+                    fc.pitch = pitch;
+                }
+            }
+        } else
+        // Drop the fly-cam at a sane vantage above the fresh terrain — unless WED_CAM
+        // staged an explicit pose for a screenshot.
+        if std::env::var("WED_CAM").is_err() {
+            let hf = &world.height;
+            let off = world_offset(hf);
+            let ext = hf.extent();
+            let (cx, cz) = (ext * 0.5, ext * 0.72);
+            let eye = Vec3::new(
+                cx + off,
+                hf.sample_world(cx, cz) + 45.0,
+                cz + off,
+            );
+            let target = Vec3::new(0.0, hf.sample_world(ext * 0.5, ext * 0.5) + 20.0, 0.0);
+            for (mut tf, mut fc) in &mut cam {
+                *tf = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                fc.yaw = yaw;
+                fc.pitch = pitch;
+            }
+        }
         commands.insert_resource(GeneratedWorld(Arc::new(world)));
-        ready.write(WorldReady);
     }
 }

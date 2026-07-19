@@ -250,16 +250,16 @@ pub fn build_atlas() -> Image {
         let (qx, qy) = quad_origin(sp);
         match sp {
             Species::Pine => cluster_needles(
-                &mut cv, qx, qy, &mut rng, 5, (22.0, 34.0), 1.9, srgb(52, 84, 48),
+                &mut cv, qx, qy, &mut rng, 7, (26.0, 40.0), 2.1, srgb(68, 106, 60),
             ),
             Species::Spruce => cluster_needles(
-                &mut cv, qx, qy, &mut rng, 7, (14.0, 22.0), 2.3, srgb(38, 66, 44),
+                &mut cv, qx, qy, &mut rng, 9, (18.0, 28.0), 2.4, srgb(52, 88, 58),
             ),
             Species::Broadleaf => cluster_leaves(
-                &mut cv, qx, qy, &mut rng, 90, (34.0, 58.0), srgb(58, 96, 40),
+                &mut cv, qx, qy, &mut rng, 130, (38.0, 62.0), srgb(78, 126, 54),
             ),
             Species::Birch => cluster_leaves(
-                &mut cv, qx, qy, &mut rng, 130, (18.0, 30.0), srgb(96, 128, 52),
+                &mut cv, qx, qy, &mut rng, 170, (22.0, 34.0), srgb(116, 152, 64),
             ),
         }
         bark_strip(&mut cv, qx, qy, sp, &mut rng);

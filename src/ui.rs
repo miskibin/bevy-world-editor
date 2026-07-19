@@ -4,7 +4,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
-use crate::genrun::{GenParams, GenProgress, Regen};
+use crate::genrun::{GenParams, Regen};
 
 pub struct UiPlugin;
 
@@ -18,7 +18,6 @@ impl Plugin for UiPlugin {
 fn panel_ui(
     mut contexts: EguiContexts,
     mut params: ResMut<GenParams>,
-    progress: Res<GenProgress>,
     mut regen: Regen,
     diagnostics: Res<DiagnosticsStore>,
 ) -> Result {
@@ -75,13 +74,13 @@ fn panel_ui(
         ui.add(egui::Slider::new(&mut p.forest.treeline, 100.0..=300.0).text("treeline"));
 
         ui.separator();
-        if progress.running {
-            ui.add(egui::ProgressBar::new(progress.fraction).text(progress.stage.clone()));
+        if regen.running() {
+            ui.add(egui::ProgressBar::new(regen.fraction()).text(regen.stage()));
         } else if ui
             .add_sized([ui.available_width(), 32.0], egui::Button::new("⟳ Regenerate"))
             .clicked()
         {
-            regen.fire();
+            regen.fire(&params);
         }
         ui.separator();
         ui.small("RMB drag — look · WASD+QE — move\nscroll — speed · Shift — boost");

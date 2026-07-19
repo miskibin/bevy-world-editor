@@ -13,7 +13,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use worldgen::TreeInstance;
 
-use crate::genrun::{GeneratedWorld, WorldEntity, WorldReady, world_offset};
+use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
 use crate::trees_mesh::{MeshData, TreeAssets, species_index};
 
 const CHUNK_M: f32 = 64.0;
@@ -48,17 +48,17 @@ fn chunk_key(x: f32, z: f32) -> (i32, i32) {
 }
 
 fn rebuild_on_ready(
-    mut ready: MessageReader<WorldReady>,
     world: Option<Res<GeneratedWorld>>,
     assets: Option<Res<TreeAssets>>,
     mut index: ResMut<ForestIndex>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if ready.read().next().is_none() {
+    // Change-detection trigger (see terrain_mesh::rebuild_on_ready for why not a message).
+    let (Some(world), Some(assets)) = (world, assets) else { return };
+    if !world.is_changed() {
         return;
     }
-    let (Some(world), Some(assets)) = (world, assets) else { return };
     let off = world_offset(&world.0.height);
 
     // Old world's entities were swept by genrun; reset the streamer's book-keeping.

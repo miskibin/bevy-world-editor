@@ -167,7 +167,7 @@ fn card(md: &mut MeshData, l: &LeafAnchor, size_mul: f32, roll: f32, uv: (f32, f
 fn build_lod2(sk: &TreeSkeleton, sp: Species) -> MeshData {
     let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)));
     let every = (sk.leaves.len() / 11).max(1);
-    let leaves = build_leaves(sk, sp, every, 3.4, false);
+    let leaves = build_leaves(sk, sp, every, 3.9, false);
     let base = md.positions.len() as u32;
     md.positions.extend_from_slice(&leaves.positions);
     md.normals.extend_from_slice(&leaves.normals);
@@ -246,6 +246,9 @@ fn build_tree_assets(
         reflectance: 0.12,
         double_sided: true,
         cull_mode: None,
+        // Light leaking through the canopy — cards lit from behind glow instead of
+        // going black, the single biggest "real foliage" cue.
+        diffuse_transmission: 0.4,
         ..default()
     });
 
@@ -273,9 +276,9 @@ fn build_tree_assets(
             let lod2_data = build_lod2(&sk, sp);
             per_variant.push(VariantMeshes {
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None).to_mesh()),
-                lod0_leaf: meshes.add(build_leaves(&sk, sp, 1, 1.0, true).to_mesh()),
+                lod0_leaf: meshes.add(build_leaves(&sk, sp, 1, 1.5, true).to_mesh()),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None).to_mesh()),
-                lod1_leaf: meshes.add(build_leaves(&sk, sp, 2, 1.7, false).to_mesh()),
+                lod1_leaf: meshes.add(build_leaves(&sk, sp, 2, 2.5, true).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
             });
