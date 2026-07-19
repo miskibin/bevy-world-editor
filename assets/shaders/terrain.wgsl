@@ -156,8 +156,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let dirt_flow = smoothstep(0.35, 0.75, flow);
     let dirt_dry = smoothstep(0.25, 0.05, moisture) * smoothstep(0.5, 0.8, patch_noise(wp.xz * 0.013));
     let dirt_w = clamp(dirt_flow + dirt_dry, 0.0, 1.0) * (1.0 - rock_w);
-    // Forest floor: moist, sheltered ground in noise-broken patches.
-    let ff_w = smoothstep(0.42 + boundary * 0.12, 0.72, moisture) * (1.0 - rock_w) * (1.0 - dirt_w);
+    // Forest floor: moist, sheltered ground in noise-broken patches. Threshold kept low —
+    // the litter/moss layer IS the visible forest floor, so it should cover most woods.
+    let ff_w = smoothstep(0.28 + boundary * 0.12, 0.58, moisture) * (1.0 - rock_w) * (1.0 - dirt_w);
     let grass_w = max(1.0 - rock_w - dirt_w - ff_w, 0.0);
 
     // ── Albedo ───────────────────────────────────────────────────────────────────
@@ -180,10 +181,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Trail lane: worn earth punches through every layer (dirt sample, slightly dusty),
     // with a ragged noise-broken edge so the path never reads as a painted stripe.
     if trail > 0.01 {
-        let ragged = trail * (0.75 + 0.5 * patch_noise(wp.xz * 0.9));
-        let lane = smoothstep(0.25, 0.75, ragged);
+        let ragged = trail * (0.80 + 0.4 * patch_noise(wp.xz * 0.9));
+        let lane = smoothstep(0.12, 0.55, ragged);
         let dirt = sample_planar(3, wp);
-        albedo = mix(albedo, dirt * vec4<f32>(1.06, 1.0, 0.92, 1.0), lane);
+        // Lighter, dustier than plain dirt so the lane reads against every layer.
+        albedo = mix(albedo, dirt * vec4<f32>(1.22, 1.12, 0.96, 1.0), lane);
     }
 
     // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
@@ -197,8 +199,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // one bent, tapered stick per ~1.25 m cell, random position/angle per cell.
     if ff_w > 0.05 {
         let tw = twig_field(wp.xz);
-        let bark = vec3<f32>(0.24, 0.17, 0.11) * (0.75 + tw.y * 0.5);
-        albedo = vec4<f32>(mix(albedo.rgb, bark, tw.x * ff_w * 0.8), 1.0);
+        let bark = vec3<f32>(0.26, 0.18, 0.11) * (0.75 + tw.y * 0.5);
+        albedo = vec4<f32>(mix(albedo.rgb, bark, min(tw.x * ff_w * 1.2, 1.0)), 1.0);
     }
 
     // Faint large-scale value drift — cures the "one flat green" read at distance.

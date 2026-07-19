@@ -250,6 +250,26 @@ fn card(
 /// LOD2: 3-sided atlas-bark trunk + ≤12 huge cards. One material → one entity, mergeable.
 fn build_lod2(sk: &TreeSkeleton, sp: Species, var: usize) -> MeshData {
     let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)), wood_tint(sp, var));
+    // Horizontal canopy card so the mid-far tier also reads from above (aerial views).
+    {
+        let (u0, v0, u1, v1) = foliage::leaf_uv(sp);
+        let t = foliage_tint(sp, var);
+        let w = (sk.canopy_radius * 1.5).max(1.8);
+        let c = Vec3::from_array(sk.canopy_center);
+        let base = md.positions.len() as u32;
+        for (sx, sz, uu, vv) in [
+            (-0.5f32, -0.5f32, u0, v1),
+            (0.5, -0.5, u1, v1),
+            (0.5, 0.5, u1, v0),
+            (-0.5, 0.5, u0, v0),
+        ] {
+            md.positions.push([c.x + sx * w, c.y + 0.6, c.z + sz * w]);
+            md.normals.push([0.0, 1.0, 0.0]);
+            md.uvs.push([uu, vv]);
+            md.colors.push([t[0], t[1], t[2], 1.0]);
+        }
+        md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
     let every = (sk.leaves.len() / 11).max(1);
     let leaves = build_sprigs(sk, sp, every, 2.6, false, foliage_tint(sp, var));
     let base = md.positions.len() as u32;
@@ -296,6 +316,22 @@ fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
         }
         md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+    // Horizontal canopy CAP — the vertical cross is edge-on (invisible) from the air, so
+    // without this the far forest vanished in aerial views.
+    let base = md.positions.len() as u32;
+    let cy = h * 0.72;
+    for (sx, sz, uu, vv) in [
+        (-0.5f32, -0.5f32, u0, v1),
+        (0.5, -0.5, u1, v1),
+        (0.5, 0.5, u1, v0),
+        (-0.5, 0.5, u0, v0),
+    ] {
+        md.positions.push([sx * w * 1.15, cy, sz * w * 1.15]);
+        md.normals.push([0.0, 1.0, 0.0]);
+        md.uvs.push([uu, vv]);
+        md.colors.push(col);
+    }
+    md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     md
 }
 

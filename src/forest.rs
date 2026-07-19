@@ -20,13 +20,13 @@ const CHUNK_M: f32 = 64.0;
 /// LOD swap distances (camera → tree).
 // UE-research: the full-mesh alpha-card ring is where overdraw lives — keep it tight.
 const LOD0_END: f32 = 48.0;
-const LOD1_END: f32 = 200.0;
-const LOD2_END: f32 = 480.0;
+const LOD1_END: f32 = 260.0;
+const LOD2_END: f32 = 620.0;
 const LOD_BAND: f32 = 18.0;
 /// Chunks fully inside this radius get individual trees.
 const NEAR_RADIUS: f32 = LOD2_END + 90.0;
 /// Merged-LOD2 tier hands off to the ultra billboards here.
-const ULTRA_START: f32 = 900.0;
+const ULTRA_START: f32 = 1200.0;
 
 pub struct ForestPlugin;
 

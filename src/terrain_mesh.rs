@@ -115,6 +115,17 @@ fn rebuild_on_ready(
         }
     }
     info!("lakes: {} ({} water chunks)", w.lake_count, lake_chunks);
+    // Staging aid: a world-space point on a beaten trail (WED_EYE/WED_CAM target).
+    // Scan from mid-map so the sample isn't a border cell.
+    if let Some(i) = w.trails[size * size / 2..].iter().position(|&t| t > 0.9) {
+        let i = i + size * size / 2;
+        let off = world_offset(&w.height);
+        info!(
+            "trail sample at world ({:.0}, {:.0})",
+            (i % size) as f32 + off,
+            (i / size) as f32 + off
+        );
+    }
 }
 
 /// Multi-source BFS over water cells: distance (in metres) to the nearest dry cell.
