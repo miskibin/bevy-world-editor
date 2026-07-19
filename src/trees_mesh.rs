@@ -125,15 +125,38 @@ fn build_leaves(
     size_mul: f32,
     crossed: bool,
 ) -> MeshData {
+    build_leaves_varied(sk, sp, every, size_mul, crossed, false)
+}
+
+fn build_leaves_varied(
+    sk: &TreeSkeleton,
+    sp: Species,
+    every: usize,
+    size_mul: f32,
+    crossed: bool,
+    vary: bool,
+) -> MeshData {
     let mut md = MeshData::default();
-    let (u0, v0, u1, v1) = foliage::leaf_uv(sp);
+    let region = foliage::leaf_uv(sp);
     for (i, l) in sk.leaves.iter().enumerate() {
         if i % every != 0 {
             continue;
         }
+        // Near LODs sample a random HALF-SIZE window of the cluster texture per card:
+        // smaller cards + varied crops read as individual leafy boughs up close, where a
+        // full identical cluster repeated on every card reads as wallpaper.
+        let uv = if vary {
+            let h1 = (l.pos[0] * 12.9898 + l.pos[1] * 78.233).sin().abs().fract() * 0.5;
+            let h2 = (l.pos[2] * 39.425 + l.pos[1] * 11.135).sin().abs().fract() * 0.5;
+            let (u0, v0, u1, v1) = region;
+            let (du, dv) = (u1 - u0, v1 - v0);
+            (u0 + du * h1, v0 + dv * h2, u0 + du * (h1 + 0.5), v0 + dv * (h2 + 0.5))
+        } else {
+            region
+        };
         let n_quads = if crossed { 2 } else { 1 };
         for q in 0..n_quads {
-            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, (u0, v0, u1, v1));
+            card(&mut md, l, size_mul, q as f32 * std::f32::consts::FRAC_PI_2, uv);
         }
     }
     md
@@ -276,9 +299,11 @@ fn build_tree_assets(
             let lod2_data = build_lod2(&sk, sp);
             per_variant.push(VariantMeshes {
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None).to_mesh()),
-                lod0_leaf: meshes.add(build_leaves(&sk, sp, 1, 1.5, true).to_mesh()),
+                lod0_leaf: meshes.add(build_leaves_varied(&sk, sp, 1, 0.9, true, true).to_mesh()),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None).to_mesh()),
-                lod1_leaf: meshes.add(build_leaves(&sk, sp, 2, 2.5, true).to_mesh()),
+                // Uncrossed + every-3rd: the LOD1 ring holds the most trees on screen, so
+                // its per-tree quad count decides the frame budget.
+                lod1_leaf: meshes.add(build_leaves_varied(&sk, sp, 3, 2.1, false, true).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
             });

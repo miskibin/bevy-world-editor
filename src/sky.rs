@@ -26,7 +26,7 @@ use bevy::render::render_resource::{
 
 use crate::flycam::FlyCam;
 
-const IBL_INTENSITY: f32 = 900.0;
+const IBL_INTENSITY: f32 = 1500.0;
 
 pub struct SkyPlugin;
 
@@ -35,7 +35,9 @@ impl Plugin for SkyPlugin {
         app.insert_resource(ClearColor(Color::srgb(0.62, 0.75, 0.92)))
             .insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.85, 0.92, 1.0),
-                brightness: 140.0,
+                // Forest-interior fill: under a dense canopy almost everything is lit by
+                // sky bounce — 140 read as pitch-black boughs.
+                brightness: 340.0,
                 affects_lightmapped_meshes: true,
             })
             .insert_resource(DirectionalLightShadowMap { size: 4096 })

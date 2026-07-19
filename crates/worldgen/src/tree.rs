@@ -282,6 +282,30 @@ pub fn grow(species: Species, seed: u32) -> TreeSkeleton {
         }
     }
 
+    // Densify: real close-up canopies need leaf MASS, not a card per branch tip — clone
+    // each anchor with jittered offsets so LOD0 renders a packed crown.
+    let (clones, jit) = match species {
+        Species::Broadleaf => (2, 0.55),
+        Species::Birch => (2, 0.45),
+        Species::Pine => (1, 0.40),
+        Species::Spruce => (1, 0.30),
+    };
+    let originals = leaves.len();
+    for i in 0..originals {
+        let l = leaves[i];
+        for _ in 0..clones {
+            leaves.push(LeafAnchor {
+                pos: [
+                    l.pos[0] + rng.signed() * jit,
+                    l.pos[1] + rng.signed() * jit * 0.7,
+                    l.pos[2] + rng.signed() * jit,
+                ],
+                dir: norm3(add3(l.dir, [rng.signed() * 0.3, rng.signed() * 0.3, rng.signed() * 0.3])),
+                size: l.size * rng.range(0.75, 1.0),
+            });
+        }
+    }
+
     // Canopy stats + broadleaf/birch leaf normals bent outward from the canopy centroid
     // ("spherical normals") so cards light as one soft volume, not a heap of flat quads.
     let (mut cx, mut cy, mut cz) = (0.0f32, 0.0f32, 0.0f32);
@@ -354,8 +378,8 @@ mod tests {
             for seed in 0..8 {
                 let t = grow(sp, seed);
                 assert!(t.height > 10.0 && t.height < 30.0, "{sp:?} height {}", t.height);
-                assert!(t.leaves.len() > 15, "{sp:?} only {} leaves", t.leaves.len());
-                assert!(t.leaves.len() < 2000, "{sp:?} leaf explosion");
+                assert!(t.leaves.len() > 40, "{sp:?} only {} leaves", t.leaves.len());
+                assert!(t.leaves.len() < 2500, "{sp:?} leaf explosion");
                 assert!(t.segments.len() > 10 && t.segments.len() < 3000);
                 assert!(t.canopy_radius > 0.5 && t.canopy_radius.is_finite());
             }

@@ -236,6 +236,9 @@ fn stream_near_chunks(
                         tf,
                         WorldEntity,
                         NearTree,
+                        // Shadow casting only from the LOD0 ring — the mid-ring canopy
+                        // shadow pass was a large chunk of the 17-fps regression.
+                        NotShadowCaster,
                         range(LOD0_END, LOD1_END),
                     ))
                     .id(),

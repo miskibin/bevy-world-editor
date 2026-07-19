@@ -30,7 +30,9 @@ pub struct ErosionParams {
 impl Default for ErosionParams {
     fn default() -> Self {
         ErosionParams {
-            droplets: 260_000,
+            // Sized for the 1024² map — ~2.4× the per-cell erosion of the 2 km first cut,
+            // which is what carves the valley detail the smaller map trades size for.
+            droplets: 240_000,
             inertia: 0.05,
             capacity: 4.0,
             min_capacity: 0.01,
