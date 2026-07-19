@@ -1,0 +1,30 @@
+[workspace]
+members = ["crates/worldgen"]
+
+[package]
+name = "bevy_world_editor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+worldgen = { path = "crates/worldgen" }
+bevy = "0.19"
+bevy_egui = "0.41"
+# pinned to Bevy's wgpu major so RenderAdapterInfo::device_type unifies (quality autodetect)
+wgpu = { version = "29", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Bevy at full opt even in dev — software-rate FPS otherwise. Own crate low-opt for fast
+# rebuilds; debug=0 dodges the MSVC PDB size cap (LNK1140).
+[profile.dev]
+opt-level = 1
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# the "*" wildcard skips workspace members — erosion needs real optimization in dev too
+[profile.dev.package.worldgen]
+opt-level = 3
