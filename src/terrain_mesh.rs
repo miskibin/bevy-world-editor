@@ -16,7 +16,7 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::genrun::{GeneratedWorld, WATER_LEVEL, WorldEntity, world_offset};
+use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
 use crate::terrain_mat::GroundMaterial;
 
 pub const CHUNK: usize = 64;
@@ -36,9 +36,9 @@ impl Plugin for TerrainMeshPlugin {
 fn rebuild_on_ready(
     world: Option<Res<GeneratedWorld>>,
     ground: Res<GroundMaterial>,
+    water: Res<crate::water_mat::LakeMaterial>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut std_mats: ResMut<Assets<StandardMaterial>>,
 ) {
     // Change-detection trigger, NOT a message: a message written the same frame the
     // resource is queued via commands gets consumed by a reader that then early-returns
@@ -92,22 +92,124 @@ fn rebuild_on_ready(
         }
     }
 
-    // Water: one plane over the whole map at the lake level.
-    let ext = w.height.extent();
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(ext * 1.2, ext * 1.2))),
-        MeshMaterial3d(std_mats.add(StandardMaterial {
-            base_color: Color::srgba(0.10, 0.22, 0.24, 0.86),
-            perceptual_roughness: 0.08,
-            metallic: 0.0,
-            reflectance: 0.45,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, WATER_LEVEL, 0.0),
-        WorldEntity,
-        NotShadowCaster,
-    ));
+    // Lakes: per-chunk meshes over the priority-flood water surface, with baked
+    // per-vertex depth + shore distance (the water shader's two data lanes).
+    let shore = shore_distance(w);
+    let mut lake_chunks = 0;
+    for cz in 0..n_chunks {
+        for cx in 0..n_chunks {
+            if let Some(mesh) = build_water_chunk(w, &shore, cx * CHUNK, cz * CHUNK) {
+                let aabb = mesh.compute_aabb();
+                let mut e = commands.spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(water.0.clone()),
+                    Transform::default(),
+                    WorldEntity,
+                    NotShadowCaster,
+                ));
+                if let Some(aabb) = aabb {
+                    e.insert(aabb);
+                }
+                lake_chunks += 1;
+            }
+        }
+    }
+    info!("lakes: {} ({} water chunks)", w.lake_count, lake_chunks);
+}
+
+/// Multi-source BFS over water cells: distance (in metres) to the nearest dry cell.
+fn shore_distance(w: &worldgen::World) -> Vec<f32> {
+    let size = w.height.size;
+    let mut dist = vec![f32::MAX; size * size];
+    let mut queue = std::collections::VecDeque::new();
+    for z in 0..size {
+        for x in 0..size {
+            let i = z * size + x;
+            if w.water[i].is_finite() {
+                // Water cell adjacent to dry land seeds at ~half a cell.
+                let dry_neighbour = [(x.wrapping_sub(1), z), (x + 1, z), (x, z.wrapping_sub(1)), (x, z + 1)]
+                    .into_iter()
+                    .any(|(nx, nz)| {
+                        nx < size && nz < size && !w.water[nz * size + nx].is_finite()
+                    });
+                if dry_neighbour {
+                    dist[i] = 0.5;
+                    queue.push_back((x, z));
+                }
+            }
+        }
+    }
+    while let Some((x, z)) = queue.pop_front() {
+        let d = dist[z * size + x];
+        if d > 12.0 {
+            continue; // foam only cares about the first few metres
+        }
+        for (nx, nz) in [(x.wrapping_sub(1), z), (x + 1, z), (x, z.wrapping_sub(1)), (x, z + 1)] {
+            if nx >= size || nz >= size {
+                continue;
+            }
+            let ni = nz * size + nx;
+            if w.water[ni].is_finite() && dist[ni] > d + 1.0 {
+                dist[ni] = d + 1.0;
+                queue.push_back((nx, nz));
+            }
+        }
+    }
+    dist
+}
+
+/// One quad per submerged cell at its lake's surface height. UV1 = (depth, shore dist).
+fn build_water_chunk(
+    w: &worldgen::World,
+    shore: &[f32],
+    x0: usize,
+    z0: usize,
+) -> Option<Mesh> {
+    let hf = &w.height;
+    let size = hf.size;
+    let off = world_offset(hf);
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uv0: Vec<[f32; 2]> = Vec::new();
+    let mut uv1: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    for z in z0..(z0 + CHUNK).min(size - 1) {
+        for x in x0..(x0 + CHUNK).min(size - 1) {
+            let i = z * size + x;
+            let surf = w.water[i];
+            if !surf.is_finite() {
+                continue;
+            }
+            let sd = shore[i].min(12.0);
+            let base = positions.len() as u32;
+            for (dx, dz) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+                let gx = x + dx;
+                let gz = z + dz;
+                let wx = gx as f32 * hf.cell + off;
+                let wz = gz as f32 * hf.cell + off;
+                let depth = (surf - hf.get(gx, gz)).max(0.02);
+                positions.push([wx, surf, wz]);
+                normals.push([0.0, 1.0, 0.0]);
+                uv0.push([wx, wz]);
+                uv1.push([depth, sd]);
+            }
+            indices.extend_from_slice(&[base, base + 2, base + 1, base + 1, base + 2, base + 3]);
+        }
+    }
+    if positions.is_empty() {
+        return None;
+    }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv0);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv1);
+    mesh.insert_indices(Indices::U32(indices));
+    Some(mesh)
 }
 
 fn attach_ground_material(e: &mut EntityCommands, ground: &GroundMaterial) {

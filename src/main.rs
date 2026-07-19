@@ -10,7 +10,9 @@ mod foliage;
 mod forest;
 mod genrun;
 mod lodline;
+mod rocks;
 mod sky;
+mod water_mat;
 mod terrain_mat;
 mod terrain_mesh;
 mod texload;
@@ -33,7 +35,9 @@ fn main() {
             flycam::FlyCamPlugin,         // free camera controls
             genrun::GenPlugin,            // async worldgen pipeline + regenerate
             terrain_mat::TerrainMatPlugin, // splat ExtendedMaterial + texture arrays
-            terrain_mesh::TerrainMeshPlugin, // chunked terrain + LOD + water
+            water_mat::WaterMatPlugin,    // lake shader material
+            terrain_mesh::TerrainMeshPlugin, // chunked terrain + LOD + lake meshes
+            rocks::RocksPlugin,           // chunk-merged boulders (terrain material)
             trees_mesh::TreeAssetsPlugin, // tree meshes, foliage atlas, bark materials
             forest::ForestPlugin,         // near streaming + far merged impostors
             ui::UiPlugin,                 // egui parameter panel

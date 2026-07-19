@@ -53,21 +53,25 @@ pub fn blur(map: &[f32], size: usize, radius: usize, passes: u32) -> Vec<f32> {
     cur
 }
 
-/// Moisture in [0,1]: log-compressed blurred flow + proximity to the water level.
-pub fn moisture_map(hf: &HeightField, flow: &[f32], water_level: f32) -> Vec<f32> {
+/// Moisture in [0,1]: log-compressed blurred flow + proximity to the global water level
+/// + a blurred halo around detected lakes (shores read lush).
+pub fn moisture_map(hf: &HeightField, flow: &[f32], water: &[f32], water_level: f32) -> Vec<f32> {
     let size = hf.size;
     // Log-compress flow (spans orders of magnitude), then blur to a soil-moisture halo.
     let mut m: Vec<f32> = flow.iter().map(|&f| (1.0 + f).ln()).collect();
     let max = m.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
     m.iter_mut().for_each(|v| *v /= max);
     let mut m = blur(&m, size, 6, 2);
+    let lake_mask: Vec<f32> =
+        water.iter().map(|w| if w.is_finite() { 1.0 } else { 0.0 }).collect();
+    let lake_halo = blur(&lake_mask, size, 8, 2);
     for z in 0..size {
         for x in 0..size {
             let h = hf.get(x, z);
             // Low ground near the water table is wet regardless of flow.
             let near_water = ((water_level + 14.0 - h) / 14.0).clamp(0.0, 1.0);
             let i = z * size + x;
-            m[i] = (m[i] * 1.6 + near_water * 0.6).clamp(0.0, 1.0);
+            m[i] = (m[i] * 1.6 + near_water * 0.6 + lake_halo[i] * 0.7).clamp(0.0, 1.0);
         }
     }
     m
@@ -85,7 +89,8 @@ mod tests {
         let slope = slope_map(&hf);
         assert!(slope.iter().all(|s| s.is_finite() && *s >= 0.0));
         let flow: Vec<f32> = (0..96 * 96).map(|i| (i % 17) as f32).collect();
-        let moist = moisture_map(&hf, &flow, 10.0);
+        let water = vec![f32::NEG_INFINITY; 96 * 96];
+        let moist = moisture_map(&hf, &flow, &water, 10.0);
         assert!(moist.iter().all(|m| (0.0..=1.0).contains(m)));
     }
 

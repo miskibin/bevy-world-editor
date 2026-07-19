@@ -37,6 +37,99 @@ impl Default for ForestParams {
 }
 
 #[derive(Clone, Copy)]
+pub struct RockInstance {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    /// Base radius in metres.
+    pub scale: f32,
+    pub yaw: f32,
+    /// Mesh variant index.
+    pub kind: u8,
+}
+
+/// Boulders + outcrops: slope-loving, noise-clustered, extra along lake shores.
+pub fn scatter_rocks(
+    hf: &HeightField,
+    slope: &[f32],
+    water: &[f32],
+    seed: u32,
+) -> Vec<RockInstance> {
+    let ext = hf.extent();
+    let spacing = 7.0f32;
+    let n = (ext / spacing) as i32;
+    let mut out = Vec::new();
+    for gz in 1..n - 1 {
+        for gx in 1..n - 1 {
+            let site_seed = lowbias32(
+                (gx as u32)
+                    .wrapping_mul(0x9E37_79B9)
+                    .wrapping_add((gz as u32).wrapping_mul(0x0068_E31D))
+                    .wrapping_add(seed ^ 0x00C0_FFEE),
+            );
+            let mut rng = Rng::new(site_seed);
+            let wx = (gx as f32 + rng.f32()) * spacing;
+            let wz = (gz as f32 + rng.f32()) * spacing;
+            let ix = (wx / hf.cell) as usize;
+            let iz = (wz / hf.cell) as usize;
+            let i = iz * hf.size + ix;
+            if water[i].is_finite() {
+                continue; // submerged
+            }
+            let s = slope[i];
+            // Clustered fields (talus, outcrop bands) rather than uniform sprinkle.
+            let cluster = fbm(wx / 88.0, wz / 88.0, 3, seed.wrapping_add(77));
+            let mut p = 0.012 + smoothstep_f(0.30, 0.85, s) * 0.22;
+            p *= 0.35 + smoothstep_f(0.45, 0.75, cluster) * 2.6;
+            // Shore rocks: dry ground within ~1.5 m above a nearby lake surface.
+            let shore = neighborhood_water(hf, water, ix, iz);
+            if let Some(surf) = shore {
+                if hf.h[i] - surf < 1.5 {
+                    p += 0.10;
+                }
+            }
+            if !rng.chance(p) {
+                continue;
+            }
+            let big = rng.chance(0.07);
+            out.push(RockInstance {
+                x: wx,
+                y: hf.sample_world(wx, wz),
+                z: wz,
+                scale: if big { rng.range(2.0, 3.8) } else { rng.range(0.45, 1.7) },
+                yaw: rng.range(0.0, std::f32::consts::TAU),
+                kind: (rng.next_u32() % 4) as u8,
+            });
+        }
+    }
+    out
+}
+
+fn smoothstep_f(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Highest lake surface within a 6-cell box, if any.
+fn neighborhood_water(hf: &HeightField, water: &[f32], x: usize, z: usize) -> Option<f32> {
+    let mut best = f32::NEG_INFINITY;
+    for dz in -6i32..=6 {
+        for dx in -6i32..=6 {
+            let nx = x as i32 + dx;
+            let nz = z as i32 + dz;
+            if nx < 0 || nz < 0 || nx >= hf.size as i32 || nz >= hf.size as i32 {
+                continue;
+            }
+            let w = water[nz as usize * hf.size + nx as usize];
+            if w.is_finite() {
+                best = best.max(w);
+            }
+        }
+    }
+    best.is_finite().then_some(best)
+}
+
+#[derive(Clone, Copy)]
 pub struct TreeInstance {
     pub x: f32,
     pub y: f32,
@@ -60,6 +153,7 @@ pub fn scatter(
     hf: &HeightField,
     slope: &[f32],
     moisture: &[f32],
+    water: &[f32],
     p: &ForestParams,
 ) -> Vec<TreeInstance> {
     let ext = hf.extent();
@@ -83,6 +177,12 @@ pub fn scatter(
             let m = sample_map(moisture, hf.size, hf.cell, wx, wz);
 
             if h < p.water_level + 0.6 || s > p.max_slope {
+                continue;
+            }
+            // No trees in (or right at the rim of) mountain lakes.
+            let wi = ((wz / hf.cell) as usize).min(hf.size - 1) * hf.size
+                + ((wx / hf.cell) as usize).min(hf.size - 1);
+            if water[wi].is_finite() && h < water[wi] + 0.4 {
                 continue;
             }
             // Treeline: thin over the last 25 m, hard stop above.
@@ -153,22 +253,23 @@ mod tests {
     use crate::heightfield::{TerrainParams, generate_base};
     use crate::maps::{moisture_map, slope_map};
 
-    fn world() -> (HeightField, Vec<f32>, Vec<f32>) {
+    fn world() -> (HeightField, Vec<f32>, Vec<f32>, Vec<f32>) {
         let tp = TerrainParams { size: 256, ..Default::default() };
         let mut hf = generate_base(&tp, |_| {});
         let ep = ErosionParams { droplets: 8000, ..Default::default() };
         let flow = erode(&mut hf, &ep, 1, |_| {});
         let slope = slope_map(&hf);
-        let moist = moisture_map(&hf, &flow, 8.0);
-        (hf, slope, moist)
+        let water = vec![f32::NEG_INFINITY; 256 * 256];
+        let moist = moisture_map(&hf, &flow, &water, 8.0);
+        (hf, slope, moist, water)
     }
 
     #[test]
     fn scatter_deterministic_and_valid() {
-        let (hf, slope, moist) = world();
+        let (hf, slope, moist, water) = world();
         let p = ForestParams::default();
-        let a = scatter(&hf, &slope, &moist, &p);
-        let b = scatter(&hf, &slope, &moist, &p);
+        let a = scatter(&hf, &slope, &moist, &water, &p);
+        let b = scatter(&hf, &slope, &moist, &water, &p);
         assert_eq!(a.len(), b.len());
         assert!(!a.is_empty(), "no trees scattered");
         for (x, y) in a.iter().zip(&b) {
@@ -185,21 +286,41 @@ mod tests {
 
     #[test]
     fn density_scales_count() {
-        let (hf, slope, moist) = world();
-        let lo = scatter(&hf, &slope, &moist, &ForestParams { density: 0.2, ..Default::default() });
-        let hi = scatter(&hf, &slope, &moist, &ForestParams { density: 0.9, ..Default::default() });
+        let (hf, slope, moist, water) = world();
+        let lo = scatter(
+            &hf, &slope, &moist, &water,
+            &ForestParams { density: 0.2, ..Default::default() },
+        );
+        let hi = scatter(
+            &hf, &slope, &moist, &water,
+            &ForestParams { density: 0.9, ..Default::default() },
+        );
         assert!(hi.len() > lo.len() * 2, "hi={} lo={}", hi.len(), lo.len());
     }
 
     #[test]
     fn zero_weights_yield_nothing() {
-        let (hf, slope, moist) = world();
+        let (hf, slope, moist, water) = world();
         let none = scatter(
             &hf,
             &slope,
             &moist,
+            &water,
             &ForestParams { species_weights: [0.0; 4], ..Default::default() },
         );
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn rocks_deterministic_and_dry() {
+        let (hf, slope, _moist, water) = world();
+        let a = scatter_rocks(&hf, &slope, &water, 5);
+        let b = scatter_rocks(&hf, &slope, &water, 5);
+        assert_eq!(a.len(), b.len());
+        assert!(!a.is_empty(), "no rocks scattered");
+        for r in &a {
+            assert!(r.scale > 0.2 && r.scale < 5.0);
+            assert!(r.y.is_finite());
+        }
     }
 }

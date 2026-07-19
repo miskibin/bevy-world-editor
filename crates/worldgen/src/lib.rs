@@ -3,6 +3,7 @@
 
 pub mod erosion;
 pub mod heightfield;
+pub mod lakes;
 pub mod maps;
 pub mod noise;
 pub mod rng;
@@ -11,7 +12,7 @@ pub mod tree;
 
 pub use erosion::ErosionParams;
 pub use heightfield::{HeightField, TerrainParams};
-pub use scatter::{ForestParams, TreeInstance};
+pub use scatter::{ForestParams, RockInstance, TreeInstance};
 pub use tree::{ALL_SPECIES, Species, TreeSkeleton};
 
 #[derive(Clone, Copy)]
@@ -36,7 +37,11 @@ pub struct World {
     pub slope: Vec<f32>,
     pub moisture: Vec<f32>,
     pub flow: Vec<f32>,
+    /// Per-cell lake surface height, `NEG_INFINITY` where dry (priority-flood).
+    pub water: Vec<f32>,
+    pub lake_count: usize,
     pub trees: Vec<TreeInstance>,
+    pub rocks: Vec<RockInstance>,
 }
 
 /// Full pipeline. `progress(fraction, stage_label)` is called from the worker thread.
@@ -50,13 +55,25 @@ pub fn generate(p: &WorldParams, mut progress: impl FnMut(f32, &str)) -> World {
     });
     progress(0.70, "thermal erosion");
     erosion::thermal(&mut height, &p.erosion, |f| progress(0.70 + f * 0.05, "thermal erosion"));
-    progress(0.75, "derived maps");
+    progress(0.75, "lakes");
+    let ws = lakes::detect_lakes(&height, p.forest.water_level, 0.5, 60);
+    progress(0.80, "derived maps");
     let slope = maps::slope_map(&height);
-    let moisture = maps::moisture_map(&height, &flow, p.forest.water_level);
-    progress(0.85, "forest scatter");
-    let trees = scatter::scatter(&height, &slope, &moisture, &p.forest);
+    let moisture = maps::moisture_map(&height, &flow, &ws.surface, p.forest.water_level);
+    progress(0.88, "scatter");
+    let trees = scatter::scatter(&height, &slope, &moisture, &ws.surface, &p.forest);
+    let rocks = scatter::scatter_rocks(&height, &slope, &ws.surface, p.terrain.seed);
     progress(1.0, "done");
-    World { height, slope, moisture, flow, trees }
+    World {
+        height,
+        slope,
+        moisture,
+        flow,
+        water: ws.surface,
+        lake_count: ws.lake_count,
+        trees,
+        rocks,
+    }
 }
 
 #[cfg(test)]
