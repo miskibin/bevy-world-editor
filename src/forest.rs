@@ -7,7 +7,7 @@
 //! LOD2 mesh per chunk (one atlas material draw) carries the canopy to `FAR_CULL`.
 
 use bevy::camera::primitives::MeshAabb;
-use bevy::camera::visibility::VisibilityRange;
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -115,6 +115,7 @@ fn rebuild_on_ready(
                 MeshMaterial3d(assets.leaf_mat.clone()),
                 Transform::default(),
                 WorldEntity,
+            NoCpuCulling,
                 NotShadowCaster,
                 VisibilityRange {
                     start_margin: start..start + LOD_BAND,
@@ -143,6 +144,9 @@ fn stream_near_chunks(
     mut last_run: Local<f32>,
     time: Res<Time>,
 ) {
+    if std::env::var("WED_NOTREES").is_ok() {
+        return;
+    }
     let Some(assets) = assets else { return };
     let Ok(cam_tf) = cam.single() else { return };
     // Re-evaluate twice a second — chunk granularity makes per-frame checks pointless.
@@ -220,6 +224,7 @@ fn stream_near_chunks(
                         MeshMaterial3d(bark.clone()),
                         tf,
                         WorldEntity,
+                        NoCpuCulling,
                         NearTree,
                         range(0.0, LOD0_END),
                     ))
@@ -232,6 +237,7 @@ fn stream_near_chunks(
                         MeshMaterial3d(assets.leaf_mat.clone()),
                         tf,
                         WorldEntity,
+                        NoCpuCulling,
                         NearTree,
                         range(0.0, LOD0_END),
                     ))
@@ -244,6 +250,7 @@ fn stream_near_chunks(
                         MeshMaterial3d(bark),
                         tf,
                         WorldEntity,
+                        NoCpuCulling,
                         NearTree,
                         range(LOD0_END, LOD1_END),
                     ))
@@ -256,6 +263,7 @@ fn stream_near_chunks(
                         MeshMaterial3d(assets.leaf_mat.clone()),
                         tf,
                         WorldEntity,
+                        NoCpuCulling,
                         NearTree,
                         // Shadow casting only from the LOD0 ring — the mid-ring canopy
                         // shadow pass was a large chunk of the 17-fps regression.
@@ -271,6 +279,7 @@ fn stream_near_chunks(
                         MeshMaterial3d(assets.leaf_mat.clone()),
                         tf,
                         WorldEntity,
+                        NoCpuCulling,
                         NearTree,
                         NotShadowCaster,
                         range(LOD1_END, LOD2_END),

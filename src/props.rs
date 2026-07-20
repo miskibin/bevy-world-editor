@@ -2,7 +2,7 @@
 //! fallen logs + stumps (bark tubes). Merged per 64 m chunk, two entities max per chunk.
 
 use bevy::camera::primitives::MeshAabb;
-use bevy::camera::visibility::VisibilityRange;
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -253,6 +253,7 @@ fn rebuild_on_ready(
             Mesh3d(meshes.add(mesh)),
             Transform::default(),
             WorldEntity,
+            NoCpuCulling,
             NotShadowCaster,
             this_range,
         ));

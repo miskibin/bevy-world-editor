@@ -13,13 +13,8 @@
     mesh_functions,
     forward_io::{Vertex, VertexOutput},
     view_transformations::position_world_to_clip,
+    mesh_view_bindings::globals,
 }
-
-struct SwayParams {
-    // x = time (s) — a material uniform, NOT globals: the prepass layout lacks globals.
-    params: vec4<f32>,
-}
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> sway_u: SwayParams;
 
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
@@ -38,7 +33,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         vec4<f32>(vertex.position, 1.0),
     );
 
-    let t = sway_u.params.x;
+    let t = globals.time;
     let wp = out.world_position.xyz;
     let gust = 0.55 + 0.45 * sin(t * 0.23 + wp.x * 0.012);
     let sway = sin(t * 1.4 + wp.x * 0.35 + wp.z * 0.27) * 0.6

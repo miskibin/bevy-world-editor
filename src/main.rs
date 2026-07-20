@@ -14,6 +14,7 @@ mod forest;
 mod genrun;
 mod grass;
 mod lodline;
+mod profile;
 mod props;
 mod rocks;
 mod sky;
@@ -58,6 +59,7 @@ fn main() {
             atmospherics::AtmosphericsPlugin, // cinematic height-fog post pass (Warbell port)
             dof::DofPlugin,               // far-distance bokeh soften (Warbell port)
             stats::StatsPlugin,           // F2 stats overlay + WED_GPUSTRESS/WED_PERFLOG
+            profile::ProfilePlugin,       // WED_PROFILE scripted benchmark
         ))
         .run();
 }

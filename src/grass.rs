@@ -4,7 +4,7 @@
 //! triangles, so the whole ring is a handful of draw calls.
 
 use bevy::camera::primitives::MeshAabb;
-use bevy::camera::visibility::VisibilityRange;
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::HashMap;
@@ -48,7 +48,7 @@ fn setup_material(mut commands: Commands, mut mats: ResMut<Assets<LeafMaterial>>
             cull_mode: None,
             ..default()
         },
-        extension: LeafSway { params: Vec4::ZERO },
+        extension: LeafSway {},
     })));
 }
 
@@ -62,6 +62,9 @@ fn stream_grass(
     mut last_run: Local<f32>,
     time: Res<Time>,
 ) {
+    if std::env::var("WED_NOGRASS").is_ok() {
+        return;
+    }
     let (Some(world), Some(mat), Ok(cam)) = (world, mat, cam.single()) else { return };
     // World swapped → all grass entities were despawned with WorldEntity; reset books.
     if world.is_changed() {
@@ -118,6 +121,7 @@ fn stream_grass(
                     MeshMaterial3d(mat.0.clone()),
                     Transform::default(),
                     WorldEntity,
+            NoCpuCulling,
                     NotShadowCaster,
                     VisibilityRange {
                         start_margin: 0.0..0.0,

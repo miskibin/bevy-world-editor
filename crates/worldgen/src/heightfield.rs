@@ -102,9 +102,9 @@ impl Default for TerrainParams {
     fn default() -> Self {
         TerrainParams {
             seed: 20260719,
-            // 384 m — detail-focus default (~8× smaller area than the earlier 1 km map);
-            // configurable from the panel, keep it a multiple of the 64-cell chunk.
-            size: 384,
+            // 1088 m — 8x the AREA of the 384 m detail sandbox (user call), still a
+            // multiple of the 64-cell terrain chunk. Panel slider overrides it.
+            size: 1088,
             cell: 1.0,
             mountainousness: 0.55,
             mountain_height: 170.0,

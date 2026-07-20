@@ -72,7 +72,7 @@ fn setup_camera(
     });
     let (yaw, pitch, _) = cam_tf.rotation.to_euler(EulerRot::YXZ);
 
-    commands.spawn((
+    let cam_id = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: 55f32.to_radians(),
@@ -117,7 +117,15 @@ fn setup_camera(
             crate::atmospherics::default_atmospherics(),
             crate::dof::default_dof(),
         ),
-    ));
+    )).id();
+
+    // `WED_OCCLUSION=1`: two-phase hi-Z occlusion culling (0.19 ships it; needs the depth
+    // prepass we always have). Off by default until measured a win — a forest is a poor
+    // occluder scene, so it can cost more than it saves.
+    if std::env::var("WED_OCCLUSION").is_ok() {
+        let cam = cam_id;
+        commands.entity(cam).insert(bevy::render::occlusion_culling::OcclusionCulling);
+    }
 
     // The procedural sky is its own entity (0.19); the camera opts in via AtmosphereSettings.
     commands.spawn(Atmosphere::earth(medium));

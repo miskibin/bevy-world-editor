@@ -338,13 +338,13 @@ fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
 /// Leaf material = StandardMaterial fragment + wind-sway vertex stage (leaves.wgsl).
 pub type LeafMaterial = ExtendedMaterial<StandardMaterial, LeafSway>;
 
+/// Wind sway lives entirely in the vertex shaders — NO per-frame data here on purpose.
+/// Time comes from the view `globals` uniform in both the main pass and the prepass.
+/// (Driving it through a material uniform instead cost 3–16 ms/frame: mutating an
+/// `Assets<Material>` entry every frame re-prepares every mesh using it. Measured on the
+/// 1088 m map: canopy fly-over 20.0 ms → 6.8 ms with the mutation removed.)
 #[derive(Asset, AsBindGroup, Clone, TypePath)]
-pub struct LeafSway {
-    /// x = time (seconds); driven by `drive_leaf_time`. A material uniform because the
-    /// prepass view layout has no `globals` binding (validated the hard way).
-    #[uniform(100)]
-    pub params: Vec4,
-}
+pub struct LeafSway {}
 
 impl MaterialExtension for LeafSway {
     fn vertex_shader() -> ShaderRef {
@@ -380,16 +380,7 @@ pub struct TreeAssetsPlugin;
 impl Plugin for TreeAssetsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<LeafMaterial>::default())
-            .add_systems(Startup, build_tree_assets)
-            .add_systems(Update, drive_leaf_time);
-    }
-}
-
-fn drive_leaf_time(time: Res<Time>, mut mats: ResMut<Assets<LeafMaterial>>) {
-    // Every LeafSway material sways on the same clock (tree leaves, grass, bushes).
-    let t = time.elapsed_secs();
-    for (_, mat) in mats.iter_mut() {
-        mat.extension.params.x = t;
+            .add_systems(Startup, build_tree_assets);
     }
 }
 
@@ -436,7 +427,7 @@ fn build_tree_assets(
             diffuse_transmission: 0.4,
             ..default()
         },
-        extension: LeafSway { params: Vec4::ZERO },
+        extension: LeafSway {},
     });
 
     let (birch_albedo, birch_rough) = foliage::build_birch_bark();

@@ -5,7 +5,7 @@
 //! never colour-mismatch the cliffs they sit on.
 
 use bevy::camera::primitives::MeshAabb;
-use bevy::camera::visibility::VisibilityRange;
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -114,6 +114,7 @@ fn rebuild_on_ready(
             Mesh3d(meshes.add(mesh)),
             Transform::default(),
             WorldEntity,
+            NoCpuCulling,
             VisibilityRange {
                 start_margin: 0.0..0.0,
                 end_margin: ROCK_FAR..ROCK_FAR + 80.0,

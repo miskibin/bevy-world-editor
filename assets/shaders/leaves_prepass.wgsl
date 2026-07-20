@@ -9,12 +9,11 @@
     prepass_io::{Vertex, VertexOutput},
     view_transformations::position_world_to_clip,
 }
+#import bevy_render::globals::Globals
 
-struct SwayParams {
-    // x = time (s) — a material uniform, NOT globals: the prepass layout lacks globals.
-    params: vec4<f32>,
-}
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> sway_u: SwayParams;
+// The PREPASS view layout binds Globals at binding 1 (the main pass uses 11, and no WGSL
+// module declares the prepass one) — see bevy_pbr::prepass view_layout_* in 0.19.
+@group(0) @binding(1) var<uniform> globals: Globals;
 
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
@@ -28,7 +27,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     );
 
     // ── sway (identical to leaves.wgsl) ─────────────────────────────────────────
-    let t = sway_u.params.x;
+    let t = globals.time;
     let wp = out.world_position.xyz;
     let gust = 0.55 + 0.45 * sin(t * 0.23 + wp.x * 0.012);
     let sway = sin(t * 1.4 + wp.x * 0.35 + wp.z * 0.27) * 0.6

@@ -79,6 +79,16 @@ fn perf_log(diags: Res<DiagnosticsStore>, time: Res<Time<Real>>, mut last: Local
     info!("PERF total={total:.2}ms | {}", top.join(" "));
 }
 
+/// "name=1.23ms" for the N heaviest GPU passes — used by the profile harness report.
+pub fn top_passes(diags: &DiagnosticsStore, n: usize) -> String {
+    let mut rows = collect_passes(diags, "/elapsed_gpu");
+    if rows.is_empty() {
+        rows = collect_passes(diags, "/elapsed_cpu");
+    }
+    rows.truncate(n);
+    rows.iter().map(|(k, v)| format!("{k}={v:.2}ms")).collect::<Vec<_>>().join(" ")
+}
+
 fn collect_passes(diags: &DiagnosticsStore, field: &str) -> Vec<(String, f64)> {
     // A pass that stopped running keeps its last EMA forever — skip stale measurements.
     let stale = std::time::Duration::from_millis(500);

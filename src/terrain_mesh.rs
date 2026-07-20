@@ -11,7 +11,7 @@
 //! (moisture, normalised flow) — the splat shader's per-vertex data lane.
 
 use bevy::camera::primitives::MeshAabb;
-use bevy::camera::visibility::VisibilityRange;
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -63,6 +63,7 @@ fn rebuild_on_ready(
                 Mesh3d(meshes.add(full)),
                 Transform::default(),
                 WorldEntity,
+                NoCpuCulling,
                 VisibilityRange {
                     start_margin: 0.0..0.0,
                     end_margin: LOD_DIST..LOD_DIST + LOD_BAND,
@@ -78,6 +79,7 @@ fn rebuild_on_ready(
                 Mesh3d(meshes.add(coarse)),
                 Transform::default(),
                 WorldEntity,
+                NoCpuCulling,
                 NotShadowCaster,
                 VisibilityRange {
                     start_margin: LOD_DIST..LOD_DIST + LOD_BAND,
@@ -105,6 +107,7 @@ fn rebuild_on_ready(
                     MeshMaterial3d(water.0.clone()),
                     Transform::default(),
                     WorldEntity,
+                    NoCpuCulling,
                     NotShadowCaster,
                 ));
                 if let Some(aabb) = aabb {
