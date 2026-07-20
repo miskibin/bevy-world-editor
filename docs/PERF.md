@@ -37,6 +37,16 @@ circle of confusion was sub-pixel. A per-pixel early-out took a water-facing vie
 Custom post passes are **invisible** in `RenderDiagnosticsPlugin`'s table unless they record a span
 (`ctx.diagnostic_recorder().as_deref()` → `time_span`) — instrument them or they read as free.
 
+**Release vs debug is a wash** (10.99 vs 12.87 ms forest-interior, uncapped): our crate already
+builds at `opt-level = 1` and every dependency at 3, so there is no "just build release" win left.
+The profiler forces `PresentMode::AutoNoVsync` — with vsync on, every measurement floors at the
+refresh interval and improvements below that are invisible.
+
+**Where the remaining frame goes**: ~10 ms frame vs ~3.3 ms of GPU passes → still CPU-bound in the
+heavy poses. Next step when it matters: a `tracing-chrome`/Tracy capture to name the systems
+(prime suspects: grass/tree chunk streaming building meshes on the main thread, and per-frame
+visibility work over ~10k entities).
+
 **Measured neutral (kept anyway / kept off):**
 - `NoCpuCulling` on static world entities: ±1.5 ms, i.e. noise at this entity count. Kept — it is
   the right call as counts grow, and GPU culling is already in `Culling` mode.

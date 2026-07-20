@@ -33,6 +33,13 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "World Editor — Forest Generator".into(),
+                // Vsync caps the frame rate, which silently floors every benchmark at the
+                // refresh interval — the profile harness must run uncapped.
+                present_mode: if std::env::var("WED_PROFILE").is_ok() {
+                    bevy::window::PresentMode::AutoNoVsync
+                } else {
+                    bevy::window::PresentMode::AutoVsync
+                },
                 ..default()
             }),
             ..default()
