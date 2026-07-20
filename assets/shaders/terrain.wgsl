@@ -207,8 +207,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         albedo = mix(albedo, dirt * vec4<f32>(1.10 * grain, 1.04 * grain, 0.94 * grain, 1.0), lane);
     }
 
-    // Moss films on moist, sheltered grass (full quality only)
-    if hq { — noise-broken so it patches, never coats.
+    // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
+    // Full quality only.
+    if hq {
     let moss = smoothstep(0.55, 0.85, moisture)
         * smoothstep(0.45, 0.75, patch_noise(wp.xz * 0.11))
         * (grass_w + ff_w)
