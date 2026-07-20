@@ -169,17 +169,21 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
             }
             let i = (mz as usize) * size + mx as usize;
             let moist = w.moisture[i];
+            // Meadow patches (matches the terrain shader's macro sward variation): tall,
+            // dense, flower-speckled swards vs ordinary short turf.
+            let meadow = worldgen::noise::fbm(wx / 135.0, wz / 135.0, 2, 777);
+            let meadowness = ((meadow - 0.45) / 0.25).clamp(0.0, 1.0);
             if w.water[i].is_finite()
                 || w.slope[i] > 0.55
                 || w.trails[i] > 0.35
-                || hf.h[i] < 8.6
+                || hf.h[i] < crate::genrun::WATER_LEVEL + 0.6
                 || moist < 0.12
             {
                 continue;
             }
             // Stocking rises with moisture; trails and dry ridges stay sparse. Open
             // meadows read bald below ~0.5 — a lawn is thousands of tufts, not dozens.
-            if !rng.chance(0.5 + moist * 0.45) {
+            if !rng.chance((0.5 + moist * 0.45) * (0.75 + 0.45 * meadowness)) {
                 continue;
             }
             let base = Vec3::new(wx, hf.sample_world(mx, mz) - 0.02, wz);
@@ -191,7 +195,18 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
                 (0.34 + 0.08 * lush) * jitter,
                 (0.10 + 0.02 * lush) * jitter,
             ];
-            tuft(&mut positions, &mut normals, &mut colors, &mut rng, base, col);
+            let scale = 1.0 + meadowness * 0.9; // meadow grass stands taller
+            tuft(&mut positions, &mut normals, &mut colors, &mut rng, base, col, scale);
+            // Wildflowers: only in meadows, sparse enough to read as speckles.
+            if meadowness > 0.35 && rng.chance(0.06 * meadowness) {
+                let petal = match rng.next_u32() % 4 {
+                    0 => [0.95, 0.92, 0.80],  // white
+                    1 => [0.95, 0.83, 0.25],  // yellow
+                    2 => [0.72, 0.55, 0.90],  // violet
+                    _ => [0.90, 0.45, 0.42],  // red
+                };
+                flower(&mut positions, &mut normals, &mut colors, &mut rng, base, col, petal);
+            }
         }
     }
     if positions.is_empty() {
@@ -208,6 +223,7 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
 }
 
 /// 7 single-triangle blades leaning outward from a common root — non-indexed.
+/// `scale` stretches the whole tuft (meadow swards stand taller than turf).
 fn tuft(
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
@@ -215,12 +231,13 @@ fn tuft(
     rng: &mut Rng,
     base: Vec3,
     col: [f32; 3],
+    scale: f32,
 ) {
     let blades = 7;
     for b in 0..blades {
         let ang = b as f32 / blades as f32 * std::f32::consts::TAU + rng.f32();
         let lean = Vec2::new(ang.cos(), ang.sin()) * rng.range(0.06, 0.22);
-        let h = rng.range(0.22, 0.5);
+        let h = rng.range(0.22, 0.5) * scale;
         let hw = rng.range(0.015, 0.035);
         let side = Vec3::new(-lean.y, 0.0, lean.x).normalize_or_zero() * hw;
         let tip = base + Vec3::new(lean.x, h, lean.y);
@@ -236,6 +253,48 @@ fn tuft(
             positions.push(p.to_array());
             normals.push(n);
             colors.push(c);
+        }
+    }
+}
+
+/// A single wildflower: a tall stem blade capped by a 3-triangle petal star.
+fn flower(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rng: &mut Rng,
+    base: Vec3,
+    stem_col: [f32; 3],
+    petal: [f32; 3],
+) {
+    let h = rng.range(0.35, 0.62);
+    let head = base + Vec3::new(rng.signed() * 0.05, h, rng.signed() * 0.05);
+    // Stem.
+    let side = Vec3::new(0.012, 0.0, 0.0);
+    for (p, c) in [
+        (base - side, [stem_col[0] * 0.6, stem_col[1] * 0.6, stem_col[2] * 0.6, 1.0]),
+        (base + side, [stem_col[0] * 0.6, stem_col[1] * 0.6, stem_col[2] * 0.6, 1.0]),
+        (head, [stem_col[0], stem_col[1], stem_col[2], 1.0]),
+    ] {
+        positions.push(p.to_array());
+        normals.push([0.0, 1.0, 0.0]);
+        colors.push(c);
+    }
+    // Petal star: 3 small triangles fanning around the head.
+    let r = rng.range(0.035, 0.065);
+    let pc = [petal[0], petal[1], petal[2], 1.0];
+    for k in 0..3 {
+        let a = k as f32 / 3.0 * std::f32::consts::TAU + rng.f32();
+        let (s0, c0) = a.sin_cos();
+        let (s1, c1) = (a + 1.2).sin_cos();
+        for p in [
+            head,
+            head + Vec3::new(c0 * r, 0.02, s0 * r),
+            head + Vec3::new(c1 * r, 0.02, s1 * r),
+        ] {
+            positions.push(p.to_array());
+            normals.push([0.0, 1.0, 0.0]);
+            colors.push(pc);
         }
     }
 }

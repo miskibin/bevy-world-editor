@@ -152,18 +152,22 @@ fn poll_gen(
             world.height.size,
             world.height.size
         );
-        // WED_EYE="x,z,h,tx,tz": eye at terrain height + h over MAP-space (x,z), looking
-        // at terrain level over (tx,tz) — ground-truth staging without knowing heights.
+        // WED_EYE="x,z,h,tx,tz[,th]": eye at terrain height + h over WORLD-space (x,z)
+        // — the map is centred on the origin, so x/z run -extent/2 .. +extent/2 —
+        // looking at terrain height + th (default h) over (tx,tz). Pass a smaller `th`
+        // to aim DOWN at the ground — with th == h the view is dead horizontal, which
+        // is useless for judging ground detail.
         if let Some(v) = std::env::var("WED_EYE").ok().map(|s| {
             s.split(',').filter_map(|p| p.trim().parse::<f32>().ok()).collect::<Vec<_>>()
         }) {
-            if v.len() == 5 {
+            if v.len() >= 5 {
                 let hf = &world.height;
                 let off = world_offset(hf);
+                let th = if v.len() >= 6 { v[5] } else { v[2] };
                 let eye =
                     Vec3::new(v[0], hf.sample_world(v[0] - off, v[1] - off) + v[2], v[1]);
                 let target =
-                    Vec3::new(v[3], hf.sample_world(v[3] - off, v[4] - off) + v[2], v[4]);
+                    Vec3::new(v[3], hf.sample_world(v[3] - off, v[4] - off) + th, v[4]);
                 for (mut tf, mut fc) in &mut cam {
                     *tf = Transform::from_translation(eye).looking_at(target, Vec3::Y);
                     let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);

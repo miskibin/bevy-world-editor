@@ -85,7 +85,7 @@ fn setup_camera(
         Exposure { ev100: 11.7 },
         Tonemapping::TonyMcMapface, // neutral filmic — realism, not a stylized grade
         Msaa::Off,
-        Smaa { preset: SmaaPreset::High },
+        Smaa { preset: SmaaPreset::Ultra },
         ScreenSpaceAmbientOcclusion {
             quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
             ..default()

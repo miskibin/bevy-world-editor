@@ -56,6 +56,12 @@ impl Plugin for AmbiencePlugin {
 }
 
 fn spawn_loops(mut commands: Commands, asset: Res<AssetServer>) {
+    // Capture harness runs silent: a screenshot/clip run should never blast the
+    // ambience (and it skips decoding the multi-MB birdsong mp3 too).
+    if std::env::var("WED_SHOT").is_ok() || std::env::var("WED_CLIP").is_ok() {
+        info!("ambience: muted (capture harness)");
+        return;
+    }
     // [ambient loops — no transcripts: birdsong / lake lapping / wind / forest bed]
     let beds = [
         (Loop::Birds, "audio/birds.mp3"),
@@ -141,14 +147,15 @@ fn drive_volumes(
     } else {
         0.0
     };
-    let water_v = water_near * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.85 * s.water;
+    // 0.42 (was 0.85) — user: water and wind 50% quieter.
+    let water_v = water_near * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.42 * s.water;
     // Birds + forest bed: strongest near the ground, gone high above the canopy.
     let low = 1.0 - ((above - 12.0) / 70.0).clamp(0.0, 1.0);
     let birds_v = 0.5 * low * s.birds;
     let forest_v = 0.28 * low * s.forest;
     // Wind: quiet, mostly an open-water breeze + a whisper at real altitude.
     let wind_v =
-        (0.015 + water_near * 0.14 + (above / 150.0).clamp(0.0, 1.0) * 0.08) * s.wind;
+        (0.008 + water_near * 0.07 + (above / 150.0).clamp(0.0, 1.0) * 0.04) * s.wind;
 
     // Ease volumes so flying between zones swells instead of snapping.
     let k = (time.delta_secs() * 2.2).min(1.0);

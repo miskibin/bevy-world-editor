@@ -139,7 +139,7 @@ pub fn build_trails(
         }
     }
     // Clearings: low-frequency noise minima on gentle ground.
-    for k in 0..9u32 {
+    for k in 0..14u32 {
         let mut best = (0usize, 0usize, f32::MAX);
         for cz in (4..side - 4).step_by(3) {
             for cx in (4..side - 4).step_by(3) {
@@ -208,7 +208,7 @@ fn stamp(wear: &mut [f32], size: usize, path: &[(usize, usize)], seed: u32) {
             let (dx, dz) = ((bz - az) / len, -(bx - ax) / len); // perpendicular
             let cx = mx + dx * wob;
             let cz = mz + dz * wob;
-            let r = 5;
+            let r = 7;
             for oz in -r..=r {
                 for ox in -r..=r {
                     let gx = (cx + ox as f32) as i32;
@@ -218,7 +218,8 @@ fn stamp(wear: &mut [f32], size: usize, path: &[(usize, usize)], seed: u32) {
                     }
                     let d = ((gx as f32 - cx).powi(2) + (gz as f32 - cz).powi(2)).sqrt();
                     // Wider lane (user: "nie widzę ścieżek"): ~1.5 m beaten core, 4.5 m halo.
-                    let v = 1.0 - crate::noise::smoothstep(1.5, 4.5, d);
+                    // ~2.2 m beaten core, 6 m halo — a trail you can actually spot from the air.
+                    let v = 1.0 - crate::noise::smoothstep(2.2, 6.0, d);
                     let i = gz as usize * size + gx as usize;
                     wear[i] = wear[i].max(v);
                 }

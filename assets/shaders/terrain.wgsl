@@ -247,6 +247,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         );
     }
 
+    // ── Meadow character: large-scale MEADOW patches on open grass — dry straw-gold
+    // swards vs lush green ones, with a mid-scale mottle inside each so a field is
+    // never one flat colour (user: "grunt jest zbyt nudny, chcialbym jakies laki").
+    let meadow = patch_noise(wp.xz * 0.0075);
+    let sward = patch_noise(wp.xz * 0.045);
+    let dry = smoothstep(0.40, 0.72, meadow) * grass_w;
+    let lush = smoothstep(0.62, 0.30, meadow) * grass_w;
+    albedo = vec4<f32>(
+        albedo.rgb
+            * mix(vec3<f32>(1.0), vec3<f32>(1.22, 1.10, 0.66), dry * (0.55 + 0.45 * sward))
+            * mix(vec3<f32>(1.0), vec3<f32>(0.80, 1.06, 0.72), lush * (0.5 + 0.5 * sward)),
+        1.0,
+    );
+
     // Faint large-scale value drift — cures the "one flat green" read at distance.
     let drift = 0.90 + 0.20 * patch_noise(wp.xz * 0.0045);
     pbr_input.material.base_color = vec4<f32>(albedo.rgb * drift, 1.0);

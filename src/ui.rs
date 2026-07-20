@@ -25,6 +25,9 @@ pub struct GfxSettings {
     pub ssao: bool,
     pub relief: f32,
     pub cavity: f32,
+    /// Supersampling factor for the 3D main pass (1.0 = native). >1 is the cheapest real
+    /// cure for jagged alpha-masked foliage edges; SMAA alone can't fix cutout edges.
+    pub ssaa: f32,
     /// Master weak-GPU switch: fast terrain shader, small shadow map, no SSAO/contact
     /// shadows/haze/DoF. Also settable at boot via `WED_LOWGFX=1`.
     pub low: bool,
@@ -40,6 +43,7 @@ impl Default for GfxSettings {
             ssao: true,
             relief: 1.6,
             cavity: 1.0,
+            ssaa: 1.35,
             low: std::env::var("WED_LOWGFX").is_ok(),
         }
     }
@@ -51,7 +55,36 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GfxSettings>()
             .add_plugins((EguiPlugin::default(), FrameTimeDiagnosticsPlugin::default()))
+            .add_systems(Update, apply_ssaa)
             .add_systems(EguiPrimaryContextPass, panel_ui);
+    }
+}
+
+/// Render the 3D main pass at `ssaa`x the window and let the blit downsample it —
+/// genuine supersampling, the only thing that actually smooths alpha-cutout foliage
+/// edges (SMAA works on geometric edges). Skipped while WED_GPUSTRESS drives the
+/// override itself.
+fn apply_ssaa(
+    gfx: Res<GfxSettings>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cam: Query<Entity, With<Camera3d>>,
+    mut commands: Commands,
+    mut last: Local<(f32, UVec2)>,
+) {
+    if std::env::var("WED_GPUSTRESS").is_ok() {
+        return;
+    }
+    let (Ok(window), Ok(cam)) = (window.single(), cam.single()) else { return };
+    let win = window.physical_size();
+    if (gfx.ssaa - last.0).abs() < 0.001 && win == last.1 {
+        return;
+    }
+    *last = (gfx.ssaa, win);
+    if gfx.ssaa <= 1.001 {
+        commands.entity(cam).remove::<bevy::camera::MainPassResolutionOverride>();
+    } else {
+        let size = (win.as_vec2() * gfx.ssaa).as_uvec2().max(UVec2::ONE);
+        commands.entity(cam).insert(bevy::camera::MainPassResolutionOverride(size));
     }
 }
 
@@ -158,7 +191,7 @@ fn panel_ui(
             gfx.ssao = !gfx.low;
             atmo.enabled = !gfx.low;
             if let Ok((_, mut dof)) = dof_q.single_mut() {
-                dof.max_radius = if gfx.low { 0.0 } else { 5.0 };
+                dof.max_radius = if gfx.low { 0.0 } else { 2.5 };
             }
             if let Ok((entity, _, _, _)) = cam.single_mut() {
                 if gfx.low {
@@ -191,6 +224,7 @@ fn panel_ui(
         changed |=
             ui.add(egui::Slider::new(&mut gfx.ev100, 9.5..=13.5).text("exposure")).changed();
         changed |= ui.checkbox(&mut gfx.ssao, "SSAO").changed();
+        ui.add(egui::Slider::new(&mut gfx.ssaa, 1.0..=2.0).text("supersampling (edges)"));
         {
             let mut edited = false;
             edited |= ui

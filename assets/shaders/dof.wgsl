@@ -52,6 +52,12 @@ fn dist_at(coord: vec2<i32>) -> f32 {
 // ramps GRADUALLY over `far_ramp` tiles (so distance keeps getting blurrier instead of
 // clamping to a flat max); the NEAR/foreground side ramps quicker (less depth to work with).
 fn coc_of(dist: f32) -> f32 {
+    // FAR-ONLY in the editor: anything at or closer than the focal plane stays sharp.
+    // A fly-cam has no subject to focus on, so near blur only ever reads as "the ground
+    // in front of me is smudged" (reported as a bug).
+    if dist <= settings.focal {
+        return 0.0;
+    }
     let d = abs(dist - settings.focal) - settings.range;
     if d <= 0.0 {
         return 0.0;
@@ -69,6 +75,12 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let center = textureSample(screen_texture, texture_sampler, in.uv);
 
     let c = coc_of(dist_at(coord));
+    // Early-out: a sub-pixel CoC can't change the result, so skip the 32-tap gather
+    // entirely. Most of a fly-cam frame is in focus, and the gather is the single most
+    // expensive thing in our post chain (measured: 12 fps -> 54 fps with DoF off).
+    if c * settings.max_radius < 0.75 {
+        return center;
+    }
     if settings.debug_view > 0.5 {
         return vec4<f32>(c, c, c, 1.0); // white = fully out-of-focus per DoF; black = sharp band
     }
