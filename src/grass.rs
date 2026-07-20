@@ -17,8 +17,8 @@ use crate::trees_mesh::{LeafMaterial, LeafSway};
 const CHUNK_M: f32 = 16.0;
 const RING: f32 = 55.0;
 const FADE: f32 = 10.0;
-/// Candidate sites per chunk axis (16 m / 1.15 m spacing).
-const SITES: i32 = 14;
+/// Candidate sites per chunk axis (16 m / ~0.85 m spacing).
+const SITES: i32 = 19;
 
 #[derive(Resource, Default)]
 struct GrassState {
@@ -177,8 +177,9 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
             {
                 continue;
             }
-            // Stocking rises with moisture; trails and dry ridges stay sparse.
-            if !rng.chance(0.35 + moist * 0.55) {
+            // Stocking rises with moisture; trails and dry ridges stay sparse. Open
+            // meadows read bald below ~0.5 — a lawn is thousands of tufts, not dozens.
+            if !rng.chance(0.5 + moist * 0.45) {
                 continue;
             }
             let base = Vec3::new(wx, hf.sample_world(mx, mz) - 0.02, wz);

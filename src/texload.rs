@@ -13,7 +13,14 @@ use image::imageops::FilterType;
 
 // 2048: the fetched sets ARE 2K — downsizing them to 1K was why the ground read soft
 // ("same tekstury"). ~90 MB per array in VRAM, a few seconds of CPU mip-building at boot.
-pub const TEX_SIZE: u32 = 2048;
+// Low-VRAM machines: `WED_TEXSIZE=1024` (or 512) shrinks every ground/bark texture.
+pub fn tex_size() -> u32 {
+    std::env::var("WED_TEXSIZE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|v| v.clamp(256, 4096).next_power_of_two())
+        .unwrap_or(2048)
+}
 
 pub fn repeat_sampler() -> ImageSampler {
     ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -34,7 +41,7 @@ pub fn repeat_sampler() -> ImageSampler {
 fn load_rgba(path: &str) -> Option<image::RgbaImage> {
     match image::open(path) {
         Ok(img) => Some(
-            image::imageops::resize(&img.to_rgba8(), TEX_SIZE, TEX_SIZE, FilterType::Triangle),
+            image::imageops::resize(&img.to_rgba8(), tex_size(), tex_size(), FilterType::Triangle),
         ),
         Err(e) => {
             warn!("texture missing: {path} ({e}) — run tools/fetch_textures.ps1");
@@ -80,18 +87,18 @@ fn make_array(layers: Vec<image::RgbaImage>, srgb: bool) -> Image {
     let n_layers = layers.len() as u32;
     let mut data = Vec::new();
     for img in layers {
-        for level in mip_chain_rgba(img.into_raw(), TEX_SIZE, TEX_SIZE) {
+        for level in mip_chain_rgba(img.into_raw(), tex_size(), tex_size()) {
             data.extend_from_slice(&level);
         }
     }
     // `Image::new` debug-asserts data.len() == mip0 size — mip-chain data needs new_uninit.
     let mut image = Image::new_uninit(
-        Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: n_layers },
+        Extent3d { width: tex_size(), height: tex_size(), depth_or_array_layers: n_layers },
         TextureDimension::D2,
         if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
         RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.mip_level_count = mip_count(TEX_SIZE);
+    image.texture_descriptor.mip_level_count = mip_count(tex_size());
     image.data = Some(data);
     image.sampler = repeat_sampler();
     image
@@ -101,16 +108,16 @@ fn make_array(layers: Vec<image::RgbaImage>, srgb: bool) -> Image {
 pub fn load_single(path: &str, srgb: bool) -> Option<Image> {
     let img = load_rgba(path)?;
     let mut data = Vec::new();
-    for level in mip_chain_rgba(img.into_raw(), TEX_SIZE, TEX_SIZE) {
+    for level in mip_chain_rgba(img.into_raw(), tex_size(), tex_size()) {
         data.extend_from_slice(&level);
     }
     let mut image = Image::new_uninit(
-        Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: 1 },
+        Extent3d { width: tex_size(), height: tex_size(), depth_or_array_layers: 1 },
         TextureDimension::D2,
         if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
         RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.mip_level_count = mip_count(TEX_SIZE);
+    image.texture_descriptor.mip_level_count = mip_count(tex_size());
     image.data = Some(data);
     image.sampler = repeat_sampler();
     Some(image)

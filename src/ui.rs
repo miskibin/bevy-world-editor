@@ -60,11 +60,21 @@ fn panel_ui(
     mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
+    ground: Res<crate::terrain_mat::GroundMaterial>,
     mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
     mut commands: Commands,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Forest Generator").default_width(250.0).show(ctx, |ui| {
+        // Loud missing-textures banner: without the CC0 sets the terrain silently falls
+        // back to flat green, which reads as "the game looks broken" (it did).
+        if matches!(&*ground, crate::terrain_mat::GroundMaterial::Fallback(_)) {
+            ui.colored_label(
+                egui::Color32::from_rgb(240, 120, 90),
+                "⚠ ground textures missing — flat-colour fallback!\nRun: tools/fetch_textures.ps1  (or pwsh -File …)\nThey are gitignored; a fresh clone needs this once.",
+            );
+            ui.separator();
+        }
         let fps = diagnostics
             .get(&FrameTimeDiagnosticsPlugin::FPS)
             .and_then(|d| d.smoothed())
