@@ -26,7 +26,7 @@ impl Plugin for PropsPlugin {
 }
 
 /// Bush: dome of sprig cards fanning up/outward from the root.
-fn bush_data(species: Species, seed: u32) -> MeshData {
+pub(crate) fn bush_data(species: Species, seed: u32) -> MeshData {
     let mut md = MeshData::default();
     let mut rng = Rng::new(seed);
     let (u0, v0, u1, v1) = foliage::leaf_uv(species);
@@ -69,7 +69,7 @@ fn bush_data(species: Species, seed: u32) -> MeshData {
 }
 
 /// Fallen log: tapered 6-side tube lying along +X with a slight tilt; bark UVs.
-fn log_data(seed: u32, stump: bool) -> MeshData {
+pub(crate) fn log_data(seed: u32, stump: bool) -> MeshData {
     let mut md = MeshData::default();
     let mut rng = Rng::new(seed);
     let (len, r0, r1, dir) = if stump {
@@ -105,13 +105,13 @@ fn log_data(seed: u32, stump: bool) -> MeshData {
 
 /// Mushroom cluster: 3–5 toadstools (4-side stem + 6-side flattened cone cap), colours
 /// in vertex colours (rendered with a plain white material).
-fn mushroom_data(seed: u32) -> MeshData {
+pub(crate) fn mushroom_data(seed: u32) -> MeshData {
     let mut md = MeshData::default();
     let mut rng = Rng::new(seed);
-    let n = 3 + (rng.next_u32() % 3);
+    let n = 4 + (rng.next_u32() % 4);
     for _ in 0..n {
-        let base = Vec3::new(rng.signed() * 0.35, 0.0, rng.signed() * 0.35);
-        let h = rng.range(0.08, 0.22);
+        let base = Vec3::new(rng.signed() * 0.45, 0.0, rng.signed() * 0.45);
+        let h = rng.range(0.14, 0.34); // chunky enough to read at a walking glance
         let cap_r = h * rng.range(0.9, 1.4);
         let stem_r = cap_r * 0.28;
         let cap_col = if rng.chance(0.4) {
@@ -266,4 +266,10 @@ fn rebuild_on_ready(
         }
     }
     info!("props: {} instances in {count} chunk meshes", world.0.props.len());
+    // Staging aids: one world coord per prop family.
+    for (kind, label) in [(0u8, "bush"), (PROP_LOG, "log"), (PROP_MUSHROOM, "mushroom")] {
+        if let Some(p) = world.0.props.iter().find(|p| p.kind == kind || (kind == 0 && p.kind == PROP_BUSH_BIRCH)) {
+            info!("{label} sample at world ({:.0}, {:.0})", p.x + off, p.z + off);
+        }
+    }
 }

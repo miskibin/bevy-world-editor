@@ -11,7 +11,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use image::imageops::FilterType;
 
-pub const TEX_SIZE: u32 = 1024;
+// 2048: the fetched sets ARE 2K — downsizing them to 1K was why the ground read soft
+// ("same tekstury"). ~90 MB per array in VRAM, a few seconds of CPU mip-building at boot.
+pub const TEX_SIZE: u32 = 2048;
 
 pub fn repeat_sampler() -> ImageSampler {
     ImageSampler::Descriptor(ImageSamplerDescriptor {

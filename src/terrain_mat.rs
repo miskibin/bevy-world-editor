@@ -72,9 +72,9 @@ fn setup_material(
                 },
                 extension: TerrainExtension {
                     params: TerrainParams {
-                        // 1/4.2m base tile, ×0.23 macro second scale, water level filled by
+                        // 1/3m base tile (denser = sharper mid-range), ×0.23 macro second scale, water level filled by
                         // genrun once params are known, normal strength 0.85.
-                        params: Vec4::new(1.0 / 4.2, 0.23, crate::genrun::WATER_LEVEL, 0.85),
+                        params: Vec4::new(1.0 / 3.0, 0.23, crate::genrun::WATER_LEVEL, 0.85),
                         params2: Vec4::new(1.6, 1.0, 0.0, 0.0),
                     },
                     albedo: images.add(arrays.albedo),

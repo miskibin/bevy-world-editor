@@ -190,10 +190,11 @@ pub fn scatter_props(
             // Edge band: near the clearing threshold from either side.
             let edge = 1.0 - ((clearing - thr).abs() / 0.06).min(1.0);
             let m = moisture[i];
-            let bush_p = edge * 0.35 + if in_forest { 0.015 } else { 0.030 * m };
-            let log_p = if in_forest { 0.020 } else { 0.0 };
-            // Mushroom clusters on the moist forest floor (and a few at shady edges).
-            let shroom_p = if in_forest && m > 0.35 { 0.040 } else { edge * 0.010 };
+            // Boosted (user: "nie widzę krzaków/grzybów") — undergrowth should be a
+            // constant companion in the woods, not an easter egg.
+            let bush_p = edge * 0.50 + if in_forest { 0.05 } else { 0.055 * m };
+            let log_p = if in_forest { 0.030 } else { 0.0 };
+            let shroom_p = if in_forest && m > 0.30 { 0.065 } else { edge * 0.015 };
             let r = rng.f32();
             let kind = if r < bush_p {
                 if rng.chance(0.6) { PROP_BUSH_BROADLEAF } else { PROP_BUSH_BIRCH }
