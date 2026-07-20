@@ -2,8 +2,9 @@
 
 use bevy::camera::Exposure;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::light::DirectionalLightShadowMap;
 use bevy::pbr::{
-    DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
+    ContactShadows, DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
     ScreenSpaceAmbientOcclusionQualityLevel,
 };
 use bevy::post_process::bloom::Bloom;
@@ -24,6 +25,9 @@ pub struct GfxSettings {
     pub ssao: bool,
     pub relief: f32,
     pub cavity: f32,
+    /// Master weak-GPU switch: fast terrain shader, small shadow map, no SSAO/contact
+    /// shadows/haze/DoF. Also settable at boot via `WED_LOWGFX=1`.
+    pub low: bool,
 }
 
 impl Default for GfxSettings {
@@ -36,6 +40,7 @@ impl Default for GfxSettings {
             ssao: true,
             relief: 1.6,
             cavity: 1.0,
+            low: std::env::var("WED_LOWGFX").is_ok(),
         }
     }
 }
@@ -61,6 +66,8 @@ fn panel_ui(
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
     ground: Res<crate::terrain_mat::GroundMaterial>,
+    mut shadow_map: ResMut<DirectionalLightShadowMap>,
+    mut low_applied: Local<bool>,
     mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
     mut commands: Commands,
 ) -> Result {
@@ -136,6 +143,39 @@ fn panel_ui(
         ui.separator();
         ui.label("Graphics");
         let mut changed = false;
+        // Weak-GPU master switch. Applied on toggle AND once at boot (WED_LOWGFX).
+        let mut low_changed = ui.checkbox(&mut gfx.low, "LOW graphics (weak GPU)").changed();
+        if !*low_applied {
+            *low_applied = true;
+            low_changed = true;
+        }
+        if low_changed {
+            for (_, mat) in ter_mats.iter_mut() {
+                mat.extension.params.params2.z = if gfx.low { 0.0 } else { 1.0 };
+            }
+            shadow_map.size = if gfx.low { 1024 } else { 4096 };
+            gfx.ssao = !gfx.low;
+            atmo.enabled = !gfx.low;
+            if let Ok((_, mut dof)) = dof_q.single_mut() {
+                dof.max_radius = if gfx.low { 0.0 } else { 5.0 };
+            }
+            if let Ok((entity, _, _, _)) = cam.single_mut() {
+                if gfx.low {
+                    commands
+                        .entity(entity)
+                        .remove::<ScreenSpaceAmbientOcclusion>()
+                        .remove::<ContactShadows>();
+                } else {
+                    commands.entity(entity).insert((
+                        ScreenSpaceAmbientOcclusion {
+                            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                            ..default()
+                        },
+                        ContactShadows::default(),
+                    ));
+                }
+            }
+        }
         changed |= ui.checkbox(&mut gfx.fog, "fog").changed();
         if gfx.fog {
             changed |= ui

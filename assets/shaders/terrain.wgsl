@@ -20,7 +20,7 @@
 struct TerrainParams {
     // x = planar UV scale (1/m), y = second-scale factor, z = water level (world y), w = normal strength
     params: vec4<f32>,
-    // x = micro-relief strength, y = cavity-AO strength, z/w spare
+    // x = micro-relief strength, y = cavity-AO strength, z = quality (0 fast / 1 full), w spare
     params2: vec4<f32>,
 }
 
@@ -113,9 +113,14 @@ fn twig_field(wp: vec2<f32>) -> vec2<f32> {
 // the texture repeat never registers.
 fn sample_planar(layer: i32, wp: vec3<f32>) -> vec4<f32> {
     let s1 = ter.params.x;
+    let a = textureSample(albedo_arr, albedo_samp, wp.xz * s1, layer);
+    // Quality lane (uniform branch — coherent skip, Warbell pattern): the de-tiling
+    // second scale + mask only on full quality.
+    if ter.params2.z < 0.5 {
+        return a;
+    }
     let s2 = ter.params.x * ter.params.y;
     let m = patch_noise(wp.xz * 0.021);
-    let a = textureSample(albedo_arr, albedo_samp, wp.xz * s1, layer);
     let b = textureSample(albedo_arr, albedo_samp, wp.xz * s2 + vec2<f32>(0.37, 0.71), layer);
     return mix(a, b, clamp(m * 1.4 - 0.2, 0.0, 1.0));
 }
@@ -149,6 +154,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     trail = in.uv.x;
 #endif
 
+    let hq = ter.params2.z > 0.5;
+
     // ── Layer weights ────────────────────────────────────────────────────────────
     let slope = 1.0 - gn.y; // 0 flat … 1 vertical
     let boundary = patch_noise(wp.xz * 0.055) - 0.5; // wobbles every threshold organically
@@ -175,10 +182,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let tw = pow(an, vec3<f32>(4.0));
     let tws = tw / (tw.x + tw.y + tw.z);
     if rock_w > 0.001 {
-        let rx = textureSample(albedo_arr, albedo_samp, wp.zy * rs, 2);
-        let ry = textureSample(albedo_arr, albedo_samp, wp.xz * rs, 2);
-        let rz = textureSample(albedo_arr, albedo_samp, wp.xy * rs, 2);
-        albedo += (rx * tws.x + ry * tws.y + rz * tws.z) * rock_w;
+        if hq {
+            let rx = textureSample(albedo_arr, albedo_samp, wp.zy * rs, 2);
+            let ry = textureSample(albedo_arr, albedo_samp, wp.xz * rs, 2);
+            let rz = textureSample(albedo_arr, albedo_samp, wp.xy * rs, 2);
+            albedo += (rx * tws.x + ry * tws.y + rz * tws.z) * rock_w;
+        } else {
+            albedo += textureSample(albedo_arr, albedo_samp, wp.xz * rs, 2) * rock_w;
+        }
     }
 
     // Trail lane: worn earth punches through every layer (dirt sample, slightly dusty),
@@ -196,16 +207,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         albedo = mix(albedo, dirt * vec4<f32>(1.10 * grain, 1.04 * grain, 0.94 * grain, 1.0), lane);
     }
 
-    // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
+    // Moss films on moist, sheltered grass (full quality only)
+    if hq { — noise-broken so it patches, never coats.
     let moss = smoothstep(0.55, 0.85, moisture)
         * smoothstep(0.45, 0.75, patch_noise(wp.xz * 0.11))
         * (grass_w + ff_w)
         * (1.0 - trail);
     albedo = vec4<f32>(mix(albedo.rgb, vec3<f32>(0.16, 0.26, 0.10), moss * 0.55), 1.0);
+    }
 
     // Fallen-twig litter baked into the forest floor (Warbell twig_field, simplified):
     // one bent, tapered stick per ~1.25 m cell, random position/angle per cell.
-    if ff_w > 0.05 {
+    if hq && ff_w > 0.05 {
         let tw = twig_field(wp.xz);
         let bark = vec3<f32>(0.26, 0.18, 0.11) * (0.75 + tw.y * 0.5);
         albedo = vec4<f32>(mix(albedo.rgb, bark, min(tw.x * ff_w * 1.2, 1.0)), 1.0);
@@ -217,7 +230,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // (luminance-only overlay: no visible re-tiling, just crisp grain).
     let cam_d = length(view.world_position.xyz - wp);
     let near_w = 1.0 - smoothstep(5.0, 16.0, cam_d);
-    if near_w > 0.01 {
+    if hq && near_w > 0.01 {
         let s3 = ter.params.x * 5.2; // ~0.8 m tiling
         // Negative mip bias: at a standing-height grazing angle the hardware picks
         // mush-tier mips even for this near overlay — bias it back toward sharp.
@@ -281,10 +294,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
         let h0 = terrain_h(wp.xz);
         let mound = smoothstep(0.10, 0.82, h0);
-        let crease = t_noise_rot(wp.xz * 1.7, 0.81, 0.59) * 0.34
-            + t_noise_rot(wp.xz * 3.3, 0.60, 0.80) * 0.40
-            + t_noise_rot(wp.xz * 6.7, 0.29, 0.957) * 0.26;
-        let groove = smoothstep(0.32, 0.70, crease);
+        var groove = 1.0;
+        if hq {
+            let crease = t_noise_rot(wp.xz * 1.7, 0.81, 0.59) * 0.34
+                + t_noise_rot(wp.xz * 3.3, 0.60, 0.80) * 0.40
+                + t_noise_rot(wp.xz * 6.7, 0.29, 0.957) * 0.26;
+            groove = smoothstep(0.32, 0.70, crease);
+        }
         let ao = mix(1.0 - 0.46 * cavity, 1.0, mound) * mix(1.0 - 0.30 * cavity, 1.0, groove);
         let crown = 1.0 + smoothstep(0.62, 1.0, h0) * 0.20 * cavity;
         let shade = mix(1.0, ao * crown, topw);
