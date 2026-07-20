@@ -27,6 +27,12 @@ const LOD_BAND: f32 = 18.0;
 const NEAR_RADIUS: f32 = LOD2_END + 90.0;
 /// Merged-LOD2 tier hands off to the ultra billboards here.
 const ULTRA_START: f32 = 1200.0;
+/// The merged chunk tier starts WELL BEFORE the per-tree tier ends. The two measure
+/// different distances — per-tree ranges use the entity origin, the merged chunk uses its
+/// AABB centre — so equal thresholds leave a band (up to half a chunk wide) where a tree
+/// is past its own cutoff but its chunk hasn't started: trees vanish at distance. The
+/// overlap costs a little double-draw in the band and is the only robust fix.
+const MERGED_START: f32 = 380.0;
 
 pub struct ForestPlugin;
 
@@ -94,7 +100,7 @@ fn rebuild_on_ready(
             continue;
         }
         for (data, start, end) in [
-            (&merged, LOD2_END, ULTRA_START),
+            (&merged, MERGED_START, ULTRA_START),
             (&ultra, ULTRA_START, f32::INFINITY),
         ] {
             let mesh = data.to_mesh();

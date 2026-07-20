@@ -147,15 +147,15 @@ fn drive_volumes(
     } else {
         0.0
     };
-    // 0.42 (was 0.85) — user: water and wind 50% quieter.
-    let water_v = water_near * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.42 * s.water;
+    // 0.21 — halved twice on user feedback ("2x ciszej" after the first pass).
+    let water_v = water_near * (1.0 - (above / 60.0).clamp(0.0, 1.0)) * 0.21 * s.water;
     // Birds + forest bed: strongest near the ground, gone high above the canopy.
     let low = 1.0 - ((above - 12.0) / 70.0).clamp(0.0, 1.0);
     let birds_v = 0.5 * low * s.birds;
     let forest_v = 0.28 * low * s.forest;
     // Wind: quiet, mostly an open-water breeze + a whisper at real altitude.
     let wind_v =
-        (0.008 + water_near * 0.07 + (above / 150.0).clamp(0.0, 1.0) * 0.04) * s.wind;
+        (0.004 + water_near * 0.035 + (above / 150.0).clamp(0.0, 1.0) * 0.02) * s.wind;
 
     // Ease volumes so flying between zones swells instead of snapping.
     let k = (time.delta_secs() * 2.2).min(1.0);
