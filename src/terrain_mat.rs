@@ -14,6 +14,8 @@ pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub struct TerrainParams {
     /// x = planar UV scale (1/m), y = second-scale factor, z = water level, w = normal strength
     pub params: Vec4,
+    /// x = micro-relief strength, y = cavity-AO strength, z/w spare. Live-tunable (panel).
+    pub params2: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Clone, TypePath)]
@@ -73,6 +75,7 @@ fn setup_material(
                         // 1/4.2m base tile, ×0.23 macro second scale, water level filled by
                         // genrun once params are known, normal strength 0.85.
                         params: Vec4::new(1.0 / 4.2, 0.23, crate::genrun::WATER_LEVEL, 0.85),
+                        params2: Vec4::new(1.6, 1.0, 0.0, 0.0),
                     },
                     albedo: images.add(arrays.albedo),
                     normal: images.add(arrays.normal),

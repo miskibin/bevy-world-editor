@@ -22,11 +22,21 @@ pub struct GfxSettings {
     pub bloom: f32,
     pub ev100: f32,
     pub ssao: bool,
+    pub relief: f32,
+    pub cavity: f32,
 }
 
 impl Default for GfxSettings {
     fn default() -> Self {
-        GfxSettings { fog: true, visibility: 3800.0, bloom: 0.12, ev100: 11.7, ssao: true }
+        GfxSettings {
+            fog: true,
+            visibility: 3800.0,
+            bloom: 0.12,
+            ev100: 11.7,
+            ssao: true,
+            relief: 1.6,
+            cavity: 1.0,
+        }
     }
 }
 
@@ -49,6 +59,7 @@ fn panel_ui(
     mut audio: ResMut<crate::ambience::AudioSettings>,
     mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
+    mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
     mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
     mut commands: Commands,
 ) -> Result {
@@ -129,6 +140,21 @@ fn panel_ui(
         changed |=
             ui.add(egui::Slider::new(&mut gfx.ev100, 9.5..=13.5).text("exposure")).changed();
         changed |= ui.checkbox(&mut gfx.ssao, "SSAO").changed();
+        {
+            let mut edited = false;
+            edited |= ui
+                .add(egui::Slider::new(&mut gfx.relief, 0.0..=3.0).text("ground relief"))
+                .changed();
+            edited |= ui
+                .add(egui::Slider::new(&mut gfx.cavity, 0.0..=2.0).text("cavity AO"))
+                .changed();
+            if edited {
+                for (_, mat) in ter_mats.iter_mut() {
+                    mat.extension.params.params2.x = gfx.relief;
+                    mat.extension.params.params2.y = gfx.cavity;
+                }
+            }
+        }
         ui.checkbox(&mut atmo.enabled, "cinematic haze");
         if atmo.enabled {
             ui.add(egui::Slider::new(&mut atmo.strength, 0.0..=1.0).text("haze strength"));

@@ -17,6 +17,7 @@ mod lodline;
 mod props;
 mod rocks;
 mod sky;
+mod stats;
 mod water_mat;
 mod terrain_mat;
 mod terrain_mesh;
@@ -56,6 +57,7 @@ fn main() {
             ambience::AmbiencePlugin,     // birds/water/wind ambient loops
             atmospherics::AtmosphericsPlugin, // cinematic height-fog post pass (Warbell port)
             dof::DofPlugin,               // far-distance bokeh soften (Warbell port)
+            stats::StatsPlugin,           // F2 stats overlay + WED_GPUSTRESS/WED_PERFLOG
         ))
         .run();
 }

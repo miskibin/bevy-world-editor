@@ -20,6 +20,8 @@
 struct TerrainParams {
     // x = planar UV scale (1/m), y = second-scale factor, z = water level (world y), w = normal strength
     params: vec4<f32>,
+    // x = micro-relief strength, y = cavity-AO strength, z/w spare
+    params2: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ter: TerrainParams;
@@ -269,11 +271,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Trails only SOFTEN the relief (0.35), never erase it — a fully-flattened wide
     // lane read as a featureless beige smear.
     let topw = smoothstep(0.35, 0.80, gn.y) * (1.0 - trail * 0.35);
-    if topw > 0.001 {
+    let relief = ter.params2.x;
+    let cavity = ter.params2.y;
+    if topw > 0.001 && relief > 0.01 {
         let e = 0.18;
         let hx = terrain_h(wp.xz + vec2<f32>(e, 0.0)) - terrain_h(wp.xz - vec2<f32>(e, 0.0));
         let hz = terrain_h(wp.xz + vec2<f32>(0.0, e)) - terrain_h(wp.xz - vec2<f32>(0.0, e));
-        n = normalize(n + vec3<f32>(-hx, 0.0, -hz) * 1.1 * topw);
+        n = normalize(n + vec3<f32>(-hx, 0.0, -hz) * relief * topw);
 
         let h0 = terrain_h(wp.xz);
         let mound = smoothstep(0.10, 0.82, h0);
@@ -281,8 +285,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             + t_noise_rot(wp.xz * 3.3, 0.60, 0.80) * 0.40
             + t_noise_rot(wp.xz * 6.7, 0.29, 0.957) * 0.26;
         let groove = smoothstep(0.32, 0.70, crease);
-        let ao = mix(0.58, 1.0, mound) * mix(0.74, 1.0, groove);
-        let crown = 1.0 + smoothstep(0.62, 1.0, h0) * 0.18;
+        let ao = mix(1.0 - 0.46 * cavity, 1.0, mound) * mix(1.0 - 0.30 * cavity, 1.0, groove);
+        let crown = 1.0 + smoothstep(0.62, 1.0, h0) * 0.20 * cavity;
         let shade = mix(1.0, ao * crown, topw);
         pbr_input.material.base_color =
             vec4<f32>(pbr_input.material.base_color.rgb * shade, 1.0);
