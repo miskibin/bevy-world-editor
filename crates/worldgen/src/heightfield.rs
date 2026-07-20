@@ -102,7 +102,9 @@ impl Default for TerrainParams {
     fn default() -> Self {
         TerrainParams {
             seed: 20260719,
-            size: 1024, // 1×1 km — user verdict: smaller but prettier than the 2 km first cut
+            // 384 m — detail-focus default (~8× smaller area than the earlier 1 km map);
+            // configurable from the panel, keep it a multiple of the 64-cell chunk.
+            size: 384,
             cell: 1.0,
             mountainousness: 0.55,
             mountain_height: 170.0,
@@ -117,11 +119,12 @@ impl Default for TerrainParams {
 pub fn generate_base(p: &TerrainParams, mut progress: impl FnMut(f32)) -> HeightField {
     let mut hf = HeightField::new(p.size, p.cell);
     let ext = hf.extent();
-    // Feature wavelengths in metres, converted to noise-space frequencies.
-    // Wavelengths sized so a 1 km map still holds a full massif + lowland + valleys.
-    let base_freq = 1.0 / 460.0;
-    let ridge_freq = 1.0 / 720.0;
-    let mask_freq = 1.0 / 1000.0;
+    // Feature wavelengths in metres (sized for the 1 km reference map), CLAMPED to the
+    // actual extent so a small detail-sandbox map still holds a full massif + lowland
+    // instead of one corner of a much larger landform.
+    let base_freq = 1.0 / 460.0f32.min(ext * 0.55);
+    let ridge_freq = 1.0 / 720.0f32.min(ext * 0.75);
+    let mask_freq = 1.0 / 1000.0f32.min(ext * 0.95);
     for z in 0..p.size {
         for x in 0..p.size {
             let wx = x as f32 * p.cell;

@@ -81,6 +81,14 @@ fn panel_ui(
 
         ui.separator();
         ui.label("Terrain");
+        let mut sz = p.terrain.size as u32;
+        if ui
+            .add(egui::Slider::new(&mut sz, 256..=1536).step_by(128.0).text("map size (m)"))
+            .changed()
+        {
+            // Keep it chunk-aligned (64-cell terrain chunks).
+            p.terrain.size = (sz as usize / 128 * 128).max(256);
+        }
         ui.add(
             egui::Slider::new(&mut p.terrain.mountainousness, 0.0..=1.0).text("mountains"),
         );

@@ -54,7 +54,12 @@ pub fn generate(p: &WorldParams, mut progress: impl FnMut(f32, &str)) -> World {
     let mut height =
         heightfield::generate_base(&p.terrain, |f| progress(f * 0.20, "landforms"));
     progress(0.20, "hydraulic erosion");
-    let flow = erosion::erode(&mut height, &p.erosion, p.terrain.seed, |f| {
+    // Droplet count is authored against the reference 1024² map; scale by actual area so
+    // the erosion DENSITY (carving per cell) stays constant across map sizes.
+    let mut ep = p.erosion;
+    let area_ratio = (p.terrain.size as f32 / 1024.0).powi(2);
+    ep.droplets = ((ep.droplets as f32 * area_ratio) as u32).max(2_000);
+    let flow = erosion::erode(&mut height, &ep, p.terrain.seed, |f| {
         progress(0.20 + f * 0.50, "hydraulic erosion")
     });
     progress(0.70, "thermal erosion");
