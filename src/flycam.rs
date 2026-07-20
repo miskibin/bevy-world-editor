@@ -75,10 +75,10 @@ fn fly(
     if keys.pressed(KeyCode::KeyA) {
         dir -= right;
     }
-    if keys.pressed(KeyCode::KeyE) {
+    if keys.pressed(KeyCode::KeyE) || keys.pressed(KeyCode::Space) {
         dir += Vec3::Y;
     }
-    if keys.pressed(KeyCode::KeyQ) {
+    if keys.pressed(KeyCode::KeyQ) || keys.pressed(KeyCode::ControlLeft) {
         dir -= Vec3::Y;
     }
     if dir != Vec3::ZERO {

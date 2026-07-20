@@ -37,9 +37,32 @@ pub fn repeat_sampler() -> ImageSampler {
     })
 }
 
-/// Load + resize one map to RGBA at `TEX_SIZE`. None (with a log line) if missing.
+/// Resolve a repo-relative asset path robustly — CWD-relative alone breaks whenever the
+/// exe is launched from outside the repo (Explorer double-click, IDE with another CWD):
+/// try `BEVY_ASSET_ROOT`, the CWD, the compile-time manifest dir, then next to the exe.
+pub fn resolve(rel: &str) -> std::path::PathBuf {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(root) = std::env::var("BEVY_ASSET_ROOT") {
+        candidates.push(std::path::Path::new(&root).join(rel));
+    }
+    candidates.push(rel.into());
+    candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel));
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(rel));
+            candidates.push(dir.join("../..").join(rel)); // target/debug → repo root
+        }
+    }
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(|| rel.into())
+}
+
+/// Load + resize one map to RGBA at `tex_size()`. None (with a log line) if missing.
 fn load_rgba(path: &str) -> Option<image::RgbaImage> {
-    match image::open(path) {
+    match image::open(resolve(path)) {
         Ok(img) => Some(
             image::imageops::resize(&img.to_rgba8(), tex_size(), tex_size(), FilterType::Triangle),
         ),

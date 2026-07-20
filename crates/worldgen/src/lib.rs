@@ -65,7 +65,8 @@ pub fn generate(p: &WorldParams, mut progress: impl FnMut(f32, &str)) -> World {
     progress(0.70, "thermal erosion");
     erosion::thermal(&mut height, &p.erosion, |f| progress(0.70 + f * 0.05, "thermal erosion"));
     progress(0.75, "lakes");
-    let ws = lakes::detect_lakes(&height, p.forest.water_level, 0.5, 60);
+    // 0.8m/120-cell floor: fewer puddle-tier lakes (user: "less water in the scene").
+    let ws = lakes::detect_lakes(&height, p.forest.water_level, 0.8, 120);
     progress(0.80, "derived maps");
     let slope = maps::slope_map(&height);
     let moisture = maps::moisture_map(&height, &flow, &ws.surface, p.forest.water_level);

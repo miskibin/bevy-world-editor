@@ -29,7 +29,8 @@ impl Default for ForestParams {
             species_weights: [1.0, 1.0, 1.0, 1.0],
             treeline: 215.0,
             max_slope: 0.75,
-            water_level: 8.0,
+            // 5.0 (was 8) — less standing water by default (user call).
+            water_level: 5.0,
             // Fewer-but-prettier: wider spacing frees the frame budget for richer LOD0s.
             spacing: 5.4,
         }

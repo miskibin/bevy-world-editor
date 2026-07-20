@@ -139,6 +139,7 @@ fn panel_ui(
             ui.add(egui::Slider::new(&mut p.forest.species_weights[i], 0.0..=2.0).text(*name));
         }
         ui.add(egui::Slider::new(&mut p.forest.treeline, 100.0..=300.0).text("treeline"));
+        ui.add(egui::Slider::new(&mut p.forest.water_level, 0.0..=16.0).text("water level"));
 
         ui.separator();
         ui.label("Graphics");

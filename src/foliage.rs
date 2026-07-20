@@ -261,7 +261,7 @@ pub fn build_atlas() -> Image {
 
     for sp in worldgen::ALL_SPECIES {
         let (qx, qy) = quad_origin(sp);
-        let blitted = image::open(sprig_file(sp))
+        let blitted = image::open(crate::texload::resolve(sprig_file(sp)))
             .map(|img| {
                 let img = image::imageops::resize(
                     &img.to_rgba8(),
