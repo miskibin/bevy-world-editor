@@ -11,15 +11,15 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use image::imageops::FilterType;
 
-// 2048: the fetched sets ARE 2K — downsizing them to 1K was why the ground read soft
-// ("same tekstury"). ~90 MB per array in VRAM, a few seconds of CPU mip-building at boot.
-// Low-VRAM machines: `WED_TEXSIZE=1024` (or 512) shrinks every ground/bark texture.
+// Default 1024 — a friendly VRAM/boot-time budget for any machine (user call). The
+// close-up crispness lives mostly in the near-detail overlay + mip bias anyway.
+// `WED_TEXSIZE=2048` opts back into the full-resolution sets on a big GPU.
 pub fn tex_size() -> u32 {
     std::env::var("WED_TEXSIZE")
         .ok()
         .and_then(|v| v.trim().parse::<u32>().ok())
         .map(|v| v.clamp(256, 4096).next_power_of_two())
-        .unwrap_or(2048)
+        .unwrap_or(1024)
 }
 
 pub fn repeat_sampler() -> ImageSampler {
