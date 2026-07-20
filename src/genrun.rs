@@ -7,7 +7,9 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use std::sync::{Arc, Mutex};
 
-pub const WATER_LEVEL: f32 = 8.0;
+// NB: keep in sync with worldgen ForestParams::default — this const also feeds the
+// terrain material's wet band. (It silently overrode the new 5.0 default back to 8.)
+pub const WATER_LEVEL: f32 = 5.0;
 
 /// Half the map side — the world is spawned centred on the origin.
 pub fn world_offset(hf: &worldgen::HeightField) -> f32 {
