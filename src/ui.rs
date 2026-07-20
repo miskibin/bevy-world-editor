@@ -37,7 +37,8 @@ impl Default for GfxSettings {
     fn default() -> Self {
         GfxSettings {
             fog: true,
-            visibility: 3800.0,
+            // 1400 m: 3800 was further than the whole map, i.e. no distance fog at all.
+            visibility: 1400.0,
             bloom: 0.12,
             ev100: 11.7,
             ssao: true,
@@ -144,7 +145,7 @@ fn panel_ui(
         ui.label("Terrain");
         let mut sz = p.terrain.size as u32;
         if ui
-            .add(egui::Slider::new(&mut sz, 256..=2048).step_by(64.0).text("map size (m)"))
+            .add(egui::Slider::new(&mut sz, 256..=4096).step_by(64.0).text("map size (m)"))
             .changed()
         {
             // Keep it chunk-aligned (64-cell terrain chunks).
@@ -242,7 +243,7 @@ fn panel_ui(
         }
         ui.checkbox(&mut atmo.enabled, "cinematic haze");
         if atmo.enabled {
-            ui.add(egui::Slider::new(&mut atmo.strength, 0.0..=1.0).text("haze strength"));
+            ui.add(egui::Slider::new(&mut atmo.strength, 0.0..=2.0).text("haze strength"));
         }
         if let Ok((_, mut dof)) = dof_q.single_mut() {
             ui.add(egui::Slider::new(&mut dof.max_radius, 0.0..=12.0).text("far blur"));

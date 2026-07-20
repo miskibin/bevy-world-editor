@@ -25,20 +25,31 @@ const LOD_BAND: f32 = 40.0;
 const COARSE_STRIDE: usize = 4;
 const SKIRT_DROP: f32 = 3.0;
 
+/// Chunks still waiting to be meshed. Building every chunk the frame the world lands
+/// freezes the app for seconds on a big map (4096 chunks × 2 meshes at 2 km) — the queue
+/// spreads it over frames so the world fills in while you fly.
+#[derive(Resource, Default)]
+pub struct TerrainQueue {
+    ground: Vec<(usize, usize)>,
+    water: Vec<(usize, usize)>,
+    shore: Vec<f32>,
+}
+
+/// Chunk pairs meshed per frame. 3 keeps the hitch under ~2 ms on the reference machine.
+const BUILD_BUDGET: usize = 3;
+
 pub struct TerrainMeshPlugin;
 
 impl Plugin for TerrainMeshPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, rebuild_on_ready);
+        app.init_resource::<TerrainQueue>()
+            .add_systems(Update, (enqueue_on_ready, drain_queue).chain());
     }
 }
 
-fn rebuild_on_ready(
+fn enqueue_on_ready(
     world: Option<Res<GeneratedWorld>>,
-    ground: Res<GroundMaterial>,
-    water: Res<crate::water_mat::LakeMaterial>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut queue: ResMut<TerrainQueue>,
 ) {
     // Change-detection trigger, NOT a message: a message written the same frame the
     // resource is queued via commands gets consumed by a reader that then early-returns
@@ -51,90 +62,100 @@ fn rebuild_on_ready(
     let w = &world.0;
     let size = w.height.size;
     let n_chunks = size / CHUNK;
-
+    queue.ground.clear();
+    queue.water.clear();
     for cz in 0..n_chunks {
         for cx in 0..n_chunks {
-            let full = build_chunk(w, cx * CHUNK, cz * CHUNK, 1);
-            let coarse = build_chunk(w, cx * CHUNK, cz * CHUNK, COARSE_STRIDE);
-            let aabb = full.compute_aabb();
-            let caabb = coarse.compute_aabb();
-
-            let mut e = commands.spawn((
-                Mesh3d(meshes.add(full)),
-                Transform::default(),
-                WorldEntity,
-                NoCpuCulling,
-                VisibilityRange {
-                    start_margin: 0.0..0.0,
-                    end_margin: LOD_DIST..LOD_DIST + LOD_BAND,
-                    use_aabb: true,
-                },
-            ));
-            attach_ground_material(&mut e, &ground);
-            if let Some(aabb) = aabb {
-                e.insert(aabb);
-            }
-
-            let mut ce = commands.spawn((
-                Mesh3d(meshes.add(coarse)),
-                Transform::default(),
-                WorldEntity,
-                NoCpuCulling,
-                NotShadowCaster,
-                VisibilityRange {
-                    start_margin: LOD_DIST..LOD_DIST + LOD_BAND,
-                    end_margin: 1.0e30..1.0e30, // terrain never culls out entirely
-                    use_aabb: true,
-                },
-            ));
-            attach_ground_material(&mut ce, &ground);
-            if let Some(caabb) = caabb {
-                ce.insert(caabb);
-            }
+            queue.ground.push((cx * CHUNK, cz * CHUNK));
+            queue.water.push((cx * CHUNK, cz * CHUNK));
         }
     }
-
-    // Lakes: per-chunk meshes over the priority-flood water surface, with baked
-    // per-vertex depth + shore distance (the water shader's two data lanes).
-    let shore = shore_distance(w);
-    let mut lake_chunks = 0;
-    for cz in 0..n_chunks {
-        for cx in 0..n_chunks {
-            if let Some(mesh) = build_water_chunk(w, &shore, cx * CHUNK, cz * CHUNK) {
-                let aabb = mesh.compute_aabb();
-                let mut e = commands.spawn((
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(water.0.clone()),
-                    Transform::default(),
-                    WorldEntity,
-                    NoCpuCulling,
-                    NotShadowCaster,
-                ));
-                if let Some(aabb) = aabb {
-                    e.insert(aabb);
-                }
-                lake_chunks += 1;
-            }
-        }
-    }
-    info!("lakes: {} ({} water chunks)", w.lake_count, lake_chunks);
-    // Staging aid: a world-space point on a beaten trail (WED_EYE/WED_CAM target).
-    // Several spread-out beaten-trail samples (staging aid) — prefer DRY meadow spots
-    // (no lake within the halo) so the coords land on a scenic path, not a shore flat.
-    let off = world_offset(&w.height);
+    // Shore distance is one BFS over the whole map — do it once here, not per chunk.
+    queue.shore = shore_distance(w);
+    info!(
+        "terrain queued: {} ground + {} water chunks (lakes: {})",
+        queue.ground.len(),
+        queue.water.len(),
+        w.lake_count
+    );
     for k in 1..6usize {
         let start = size * size * k / 6;
         if let Some(i) = w.trails[start..].iter().position(|&t| t > 0.9) {
             let i = i + start;
-            let near_lake = (0..5).any(|d| {
-                w.water.get(i + d * 8).map(|s| s.is_finite()).unwrap_or(false)
-                    || w.water.get(i.saturating_sub(d * 8)).map(|s| s.is_finite()).unwrap_or(false)
-            });
+            let off = world_offset(&w.height);
             info!(
-                "trail sample {k} at world ({:.0}, {:.0}) lake_near={near_lake}",
+                "trail sample {k} at world ({:.0}, {:.0})",
                 (i % size) as f32 + off,
                 (i / size) as f32 + off
             );
+        }
+    }
+}
+
+/// Mesh a bounded number of queued chunks per frame.
+fn drain_queue(
+    world: Option<Res<GeneratedWorld>>,
+    ground: Res<GroundMaterial>,
+    water: Res<crate::water_mat::LakeMaterial>,
+    mut queue: ResMut<TerrainQueue>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Some(world) = world else { return };
+    let w = &world.0;
+    for _ in 0..BUILD_BUDGET {
+        let Some((x0, z0)) = queue.ground.pop() else { break };
+        let full = build_chunk(w, x0, z0, 1);
+        let coarse = build_chunk(w, x0, z0, COARSE_STRIDE);
+        let aabb = full.compute_aabb();
+        let caabb = coarse.compute_aabb();
+        let mut e = commands.spawn((
+            Mesh3d(meshes.add(full)),
+            Transform::default(),
+            WorldEntity,
+            NoCpuCulling,
+            VisibilityRange {
+                start_margin: 0.0..0.0,
+                end_margin: LOD_DIST..LOD_DIST + LOD_BAND,
+                use_aabb: true,
+            },
+        ));
+        attach_ground_material(&mut e, &ground);
+        if let Some(aabb) = aabb {
+            e.insert(aabb);
+        }
+        let mut ce = commands.spawn((
+            Mesh3d(meshes.add(coarse)),
+            Transform::default(),
+            WorldEntity,
+            NoCpuCulling,
+            NotShadowCaster,
+            VisibilityRange {
+                start_margin: LOD_DIST..LOD_DIST + LOD_BAND,
+                end_margin: 1.0e30..1.0e30, // terrain never culls out entirely
+                use_aabb: true,
+            },
+        ));
+        attach_ground_material(&mut ce, &ground);
+        if let Some(caabb) = caabb {
+            ce.insert(caabb);
+        }
+    }
+    for _ in 0..BUILD_BUDGET * 2 {
+        let Some((x0, z0)) = queue.water.pop() else { break };
+        if let Some(mesh) = build_water_chunk(w, &queue.shore, x0, z0) {
+            let aabb = mesh.compute_aabb();
+            let mut e = commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(water.0.clone()),
+                Transform::default(),
+                WorldEntity,
+                NoCpuCulling,
+                NotShadowCaster,
+            ));
+            if let Some(aabb) = aabb {
+                e.insert(aabb);
+            }
         }
     }
 }

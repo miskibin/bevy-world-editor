@@ -69,9 +69,10 @@ impl Default for Atmospherics {
             cam_pos: Vec3::ZERO,
             // Tuned for the 1 km map + 170 m relief (Warbell's numbers, rescaled: taller
             // world → gentler falloff, valley fog pooling low).
-            density: 0.0020,
+            // 0.0055 (was 0.0020) — user: the haze read far too weak on the 1 km map.
+            density: 0.0055,
             sun_dir: Vec3::Y,
-            height_falloff: 0.030,
+            height_falloff: 0.022,
             fog_color: Vec3::new(0.78, 0.80, 0.72),
             inscatter_exp: 4.0,
             glow_color: Vec3::new(1.0, 0.88, 0.65),
@@ -79,8 +80,8 @@ impl Default for Atmospherics {
             cloud_strength: 0.10,
             cloud_scale: 0.014,
             noise_strength: 0.40,
-            fog_start: 100.0,
-            fog_max: 0.42,
+            fog_start: 55.0,
+            fog_max: 0.70,
             fade: 0.0,
             base_height: 8.0,
             _pad: 0.0,

@@ -100,7 +100,7 @@ fn setup_camera(
             directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.6),
             directional_light_exponent: 30.0,
             falloff: FogFalloff::from_visibility_colors(
-                3800.0,
+                1400.0,
                 Color::srgb(0.42, 0.48, 0.55),
                 Color::srgb(0.68, 0.76, 0.88),
             ),

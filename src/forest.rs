@@ -20,26 +20,29 @@ const CHUNK_M: f32 = 64.0;
 /// LOD swap distances (camera → tree).
 // UE-research: the full-mesh alpha-card ring is where overdraw lives — keep it tight.
 const LOD0_END: f32 = 48.0;
-const LOD1_END: f32 = 260.0;
-const LOD2_END: f32 = 620.0;
+const LOD1_END: f32 = 170.0;
+/// Per-tree entities stop here — beyond it the merged chunk meshes take over. Keeping
+/// this SHORT is what makes big maps affordable:each tree costs 4 entities, so a 700 m
+/// radius on a 1 km map meant ~60k entities and a 100 ms frame (measured).
+const LOD2_END: f32 = 300.0;
 const LOD_BAND: f32 = 18.0;
 /// Chunks fully inside this radius get individual trees.
-const NEAR_RADIUS: f32 = LOD2_END + 90.0;
+const NEAR_RADIUS: f32 = LOD2_END + 60.0;
 /// Merged-LOD2 tier hands off to the ultra billboards here.
-const ULTRA_START: f32 = 1200.0;
+const ULTRA_START: f32 = 900.0;
 /// The merged chunk tier starts WELL BEFORE the per-tree tier ends. The two measure
 /// different distances — per-tree ranges use the entity origin, the merged chunk uses its
 /// AABB centre — so equal thresholds leave a band (up to half a chunk wide) where a tree
 /// is past its own cutoff but its chunk hasn't started: trees vanish at distance. The
 /// overlap costs a little double-draw in the band and is the only robust fix.
-const MERGED_START: f32 = 380.0;
+const MERGED_START: f32 = 170.0;
 
 pub struct ForestPlugin;
 
 impl Plugin for ForestPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ForestIndex>()
-            .add_systems(Update, (rebuild_on_ready, stream_near_chunks).chain());
+            .add_systems(Update, (rebuild_on_ready, drain_far_queue, stream_near_chunks).chain());
     }
 }
 
@@ -49,6 +52,9 @@ pub struct ForestIndex {
     pub chunks: HashMap<(i32, i32), Vec<TreeInstance>>,
     live: HashMap<(i32, i32), Vec<Entity>>,
     generation: u32,
+    /// Chunks whose merged far-field meshes still need building (spread over frames —
+    /// a 2 km map has thousands and doing them in one frame freezes for seconds).
+    far_pending: Vec<(i32, i32)>,
 }
 
 fn chunk_key(x: f32, z: f32) -> (i32, i32) {
@@ -85,9 +91,22 @@ fn rebuild_on_ready(
         index.chunks.entry(chunk_key(t.x, t.z)).or_default().push(t);
     }
 
-    // Far field, two merged tiers per chunk: LOD2 impostors (480–900 m), then crossed
-    // billboards (4 tris/tree) from 900 m to INFINITY — the horizon never pops empty.
-    for (key, trees) in &index.chunks {
+    // Far field is built lazily by `drain_far_queue` — see ForestIndex::far_pending.
+    index.far_pending = index.chunks.keys().copied().collect();
+    info!("forest indexed: {} chunks", index.chunks.len());
+}
+
+/// Build a bounded number of merged far-field chunk meshes per frame.
+fn drain_far_queue(
+    assets: Option<Res<TreeAssets>>,
+    mut index: ResMut<ForestIndex>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Some(assets) = assets else { return };
+    for _ in 0..2 {
+        let Some(key) = index.far_pending.pop() else { break };
+        let Some(trees) = index.chunks.get(&key) else { continue };
         let mut merged = MeshData::default();
         let mut ultra = MeshData::default();
         for t in trees {
@@ -105,17 +124,14 @@ fn rebuild_on_ready(
         ] {
             let mesh = data.to_mesh();
             let aabb = mesh.compute_aabb();
-            let end_margin = if end.is_finite() {
-                end..end + LOD_BAND
-            } else {
-                1.0e30..1.0e30
-            };
+            let end_margin =
+                if end.is_finite() { end..end + LOD_BAND } else { 1.0e30..1.0e30 };
             let mut e = commands.spawn((
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(assets.leaf_mat.clone()),
                 Transform::default(),
                 WorldEntity,
-            NoCpuCulling,
+                NoCpuCulling,
                 NotShadowCaster,
                 VisibilityRange {
                     start_margin: start..start + LOD_BAND,
@@ -127,9 +143,7 @@ fn rebuild_on_ready(
                 e.insert(aabb);
             }
         }
-        let _ = key;
     }
-    info!("forest indexed: {} chunks", index.chunks.len());
 }
 
 /// Marker on streamed near-field tree entities (for sanity/debug queries).
@@ -269,20 +283,6 @@ fn stream_near_chunks(
                         // shadow pass was a large chunk of the 17-fps regression.
                         NotShadowCaster,
                         range(LOD0_END, LOD1_END),
-                    ))
-                    .id(),
-            );
-            ents.push(
-                commands
-                    .spawn((
-                        Mesh3d(vm.lod2.clone()),
-                        MeshMaterial3d(assets.leaf_mat.clone()),
-                        tf,
-                        WorldEntity,
-                        NoCpuCulling,
-                        NearTree,
-                        NotShadowCaster,
-                        range(LOD1_END, LOD2_END),
                     ))
                     .id(),
             );

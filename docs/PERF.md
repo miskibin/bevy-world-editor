@@ -26,6 +26,25 @@ GPU work is irrelevant — that was the case here.
 | high-overview | 20.4 ms | 7.9 ms |
 | ridge-vista | 27.2 ms | 10.2 ms |
 
+After the big-map round (incremental world build + tighter per-tree entity radius), release,
+vsync off, 1088 m map:
+
+| Pose | ms (median) | fps |
+|---|---|---|
+| forest-interior | 6.5 | 154 |
+| canopy-flyover | 6.1 | 164 |
+| lake-shore | 9.4 | 107 |
+| high-overview | 6.2 | 161 |
+| ridge-vista | 9.6 | 105 |
+
+**Big maps need bounded per-frame work, not faster code.** Two changes made 1 km+ maps viable:
+- **Incremental world build.** Terrain, water, far-forest, prop and rock chunk meshes are queued at
+  world-ready and drained a few per frame. Building them all in the frame the world lands froze the
+  app for seconds on a 1 km map and would be minutes at 4 km.
+- **Per-tree entities only within 360 m.** Each tree costs 4 entities; the old 710 m radius meant
+  nearly the whole 1 km map had individual trees (~60k entities) and a *102 ms* ridge-vista frame.
+  Shrinking the radius and letting the merged chunk meshes start at 170 m fixed it (102 → 9.6 ms).
+
 **The one big win: never mutate a material asset per frame.** Wind time was driven by writing a
 `#[uniform]` field on the shared leaf material every frame; mutating an entry in `Assets<M>`
 re-prepares that material and everything keyed on it. Removing it (time now comes from the view

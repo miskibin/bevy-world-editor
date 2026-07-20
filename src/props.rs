@@ -19,11 +19,62 @@ const PROP_FAR: f32 = 280.0;
 
 pub struct PropsPlugin;
 
+/// Chunk meshes waiting to be spawned — built a few per frame so a big map fills in
+/// smoothly instead of freezing (a 2 km map has thousands of prop chunks).
+#[derive(Resource, Default)]
+struct PropQueue(Vec<(MeshData, u8)>);
+
 impl Plugin for PropsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, rebuild_on_ready);
+        app.init_resource::<PropQueue>()
+            .add_systems(Update, (rebuild_on_ready, drain_props).chain());
     }
 }
+
+fn drain_props(
+    mut queue: ResMut<PropQueue>,
+    assets: Option<Res<TreeAssets>>,
+    plain: Option<Res<PlainPropMaterial>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let (Some(assets), Some(plain)) = (assets, plain) else { return };
+    let range = VisibilityRange {
+        start_margin: 0.0..0.0,
+        end_margin: PROP_FAR..PROP_FAR + 40.0,
+        use_aabb: true,
+    };
+    for _ in 0..4 {
+        let Some((data, kind)) = queue.0.pop() else { break };
+        let mesh = data.to_mesh();
+        let aabb = mesh.compute_aabb();
+        let this_range = if kind == 2 {
+            VisibilityRange { start_margin: 0.0..0.0, end_margin: 90.0..110.0, use_aabb: true }
+        } else {
+            range.clone()
+        };
+        let mut e = commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            Transform::default(),
+            WorldEntity,
+            NoCpuCulling,
+            NotShadowCaster,
+            this_range,
+        ));
+        match kind {
+            0 => e.insert(MeshMaterial3d(assets.leaf_mat.clone())),
+            1 => e.insert(MeshMaterial3d(assets.bark_mats[2].clone())),
+            _ => e.insert(MeshMaterial3d(plain.0.clone())),
+        };
+        if let Some(aabb) = aabb {
+            e.insert(aabb);
+        }
+    }
+}
+
+/// One shared material for the vertex-coloured props (mushrooms).
+#[derive(Resource)]
+struct PlainPropMaterial(Handle<StandardMaterial>);
 
 /// Bush: dome of sprig cards fanning up/outward from the root.
 pub(crate) fn bush_data(species: Species, seed: u32) -> MeshData {
@@ -167,8 +218,9 @@ fn rebuild_on_ready(
     world: Option<Res<GeneratedWorld>>,
     assets: Option<Res<TreeAssets>>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut queue: ResMut<PropQueue>,
+    plain_res: Option<Res<PlainPropMaterial>>,
 ) {
     let (Some(world), Some(assets)) = (world, assets) else { return };
     if !world.is_changed() {
@@ -221,50 +273,25 @@ fn rebuild_on_ready(
         end_margin: PROP_FAR..PROP_FAR + 40.0,
         use_aabb: true,
     };
-    // Mushrooms: plain vertex-colour material, tighter cull (they're ankle-height).
-    let plain_mat = mats.add(StandardMaterial {
-        perceptual_roughness: 0.85,
-        reflectance: 0.15,
-        ..default()
-    });
+    if plain_res.is_none() {
+        commands.insert_resource(PlainPropMaterial(mats.add(StandardMaterial {
+            perceptual_roughness: 0.85,
+            reflectance: 0.15,
+            ..default()
+        })));
+    }
     let mut count = 0;
     for (data, kind) in leafy
-        .values()
+        .into_values()
         .map(|d| (d, 0u8))
-        .chain(woody.values().map(|d| (d, 1)))
-        .chain(plain.values().map(|d| (d, 2)))
+        .chain(woody.into_values().map(|d| (d, 1)))
+        .chain(plain.into_values().map(|d| (d, 2)))
     {
         if data.positions.is_empty() {
             continue;
         }
         count += 1;
-        let mesh = data.to_mesh();
-        let aabb = mesh.compute_aabb();
-        let this_range = if kind == 2 {
-            VisibilityRange {
-                start_margin: 0.0..0.0,
-                end_margin: 90.0..110.0,
-                use_aabb: true,
-            }
-        } else {
-            range.clone()
-        };
-        let mut e = commands.spawn((
-            Mesh3d(meshes.add(mesh)),
-            Transform::default(),
-            WorldEntity,
-            NoCpuCulling,
-            NotShadowCaster,
-            this_range,
-        ));
-        match kind {
-            0 => e.insert(MeshMaterial3d(assets.leaf_mat.clone())),
-            1 => e.insert(MeshMaterial3d(assets.bark_mats[2].clone())),
-            _ => e.insert(MeshMaterial3d(plain_mat.clone())),
-        };
-        if let Some(aabb) = aabb {
-            e.insert(aabb);
-        }
+        queue.0.push((data, kind));
     }
     info!("props: {} instances in {count} chunk meshes", world.0.props.len());
     // Staging aids: one world coord per prop family.
