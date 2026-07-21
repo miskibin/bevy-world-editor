@@ -50,7 +50,13 @@ fn loft(d: &mut MeshData, rings: &[Ring], segs: usize) {
         let up = side.cross(t).normalize_or(Vec3::Y);
         frames.push((side, up));
     }
+    // Arc length along the spine drives the v coordinate so fur/feather detail keeps a
+    // constant world density (~1 texture repeat per 0.8 m).
+    let mut arc = 0.0f32;
     for (i, r) in rings.iter().enumerate() {
+        if i > 0 {
+            arc += (rings[i].c - rings[i - 1].c).length();
+        }
         let (side, up) = frames[i];
         for j in 0..=segs {
             let a = j as f32 / segs as f32 * std::f32::consts::TAU;
@@ -68,7 +74,7 @@ fn loft(d: &mut MeshData, rings: &[Ring], segs: usize) {
             ];
             d.positions.push(pos.to_array());
             d.normals.push(nrm.to_array());
-            d.uvs.push([0.0, 0.0]);
+            d.uvs.push([j as f32 / segs as f32 * 1.5, arc / 0.8]);
             d.colors.push(col);
         }
     }
@@ -122,17 +128,24 @@ fn flat_poly(d: &mut MeshData, pts: &[Vec2], cols: &[[f32; 4]]) {
         }
         c
     };
+    let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for p in pts {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let span = (hi - lo).max(Vec2::splat(1e-4));
+    let uv = |p: Vec2| [(p.x - lo.x) / span.x, (p.y - lo.y) / span.y];
     for zn in [1.0f32, -1.0] {
         let n = [0.0, 0.0, zn];
         let base = d.positions.len() as u32;
         d.positions.push([centroid.x, centroid.y, 0.0]);
         d.normals.push(n);
-        d.uvs.push([0.0, 0.0]);
+        d.uvs.push(uv(centroid));
         d.colors.push(ccol);
         for (p, c) in pts.iter().zip(cols) {
             d.positions.push([p.x, p.y, 0.0]);
             d.normals.push(n);
-            d.uvs.push([0.0, 0.0]);
+            d.uvs.push(uv(*p));
             d.colors.push(*c);
         }
         let m = pts.len() as u32;
@@ -150,9 +163,9 @@ fn flat_poly(d: &mut MeshData, pts: &[Vec2], cols: &[[f32; 4]]) {
 
 // ── Deer (roe-deer proportions) ─────────────────────────────────────────────────────
 
-const COAT: [f32; 3] = [0.46, 0.32, 0.20];
-const COAT_DARK: [f32; 3] = [0.38, 0.26, 0.16];
-const BELLY: [f32; 3] = [0.66, 0.58, 0.45];
+const COAT: [f32; 3] = [0.56, 0.40, 0.25];
+const COAT_DARK: [f32; 3] = [0.46, 0.32, 0.20];
+const BELLY: [f32; 3] = [0.80, 0.70, 0.55];
 const RUMP: [f32; 3] = [0.85, 0.80, 0.68];
 const MUZZLE: [f32; 3] = [0.22, 0.16, 0.11];
 
@@ -284,8 +297,8 @@ pub const DEER_NECK: [f32; 3] = [0.48, 0.84, 0.0];
 
 // ── Bird (thrush-like) ──────────────────────────────────────────────────────────────
 
-const PLUMAGE: [f32; 3] = [0.16, 0.13, 0.11];
-const BREAST: [f32; 3] = [0.52, 0.38, 0.24];
+const PLUMAGE: [f32; 3] = [0.20, 0.16, 0.14];
+const BREAST: [f32; 3] = [0.64, 0.47, 0.30];
 
 /// Body: teardrop loft nose-to-tail plus a fanned tail feather plate. Faces +X,
 /// pivot at the body centre.
@@ -386,11 +399,9 @@ pub fn butterfly_body() -> MeshData {
 /// One wing: true butterfly outline (fore + hind lobe), dark border, bright field.
 /// Root at origin, extends +X in the wing's flat plane; the pose code hinges it.
 pub fn butterfly_wing(variant: u32) -> MeshData {
-    let (field, border) = match variant % 3 {
-        0 => ([0.82, 0.42, 0.08, 1.0], [0.12, 0.08, 0.05, 1.0]), // monarch
-        1 => ([0.88, 0.88, 0.92, 1.0], [0.25, 0.25, 0.28, 1.0]), // cabbage white
-        _ => ([0.22, 0.34, 0.80, 1.0], [0.06, 0.08, 0.18, 1.0]), // blue morpho
-    };
+    // The painted per-variant pattern texture carries all colour; vertices stay white.
+    let _ = variant;
+    let (field, border) = ([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]);
     // Outline: forewing lobe up-forward, hindwing lobe down-back (x = span, y = chord).
     let pts = [
         Vec2::new(0.005, 0.015),

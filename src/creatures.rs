@@ -34,6 +34,9 @@ impl Plugin for CreaturesPlugin {
 #[derive(Resource)]
 struct CreatureAssets {
     mat: Handle<StandardMaterial>,
+    fur: Handle<StandardMaterial>,
+    feather: Handle<StandardMaterial>,
+    wing: [Handle<StandardMaterial>; 3],
     deer_body: Handle<Mesh>,
     deer_head: [Handle<Mesh>; 2], // doe, buck
     deer_leg: Handle<Mesh>,
@@ -99,6 +102,7 @@ fn spawn_on_ready(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut flocks: ResMut<Flocks>,
     assets: Option<Res<CreatureAssets>>,
 ) {
@@ -110,12 +114,28 @@ fn spawn_on_ready(
     let assets = match assets {
         Some(a) => a.clone_inner(),
         None => {
+            let fur_tex = images.add(crate::creature_tex::fur_image());
+            let feather_tex = images.add(crate::creature_tex::feather_image());
+            let [w0, w1, w2] = crate::creature_tex::wing_images();
+            let coat = |tex: Handle<Image>, rough: f32| StandardMaterial {
+                base_color_texture: Some(tex),
+                perceptual_roughness: rough,
+                reflectance: 0.1,
+                ..default()
+            };
             let a = CreatureAssets {
                 mat: mats.add(StandardMaterial {
                     perceptual_roughness: 0.9,
                     reflectance: 0.1,
                     ..default()
                 }),
+                fur: mats.add(coat(fur_tex, 0.95)),
+                feather: mats.add(coat(feather_tex, 0.75)),
+                wing: [
+                    mats.add(coat(images.add(w0), 0.6)),
+                    mats.add(coat(images.add(w1), 0.6)),
+                    mats.add(coat(images.add(w2), 0.55)),
+                ],
                 deer_body: meshes.add(creature_mesh::deer_body().to_mesh()),
                 deer_head: [
                     meshes.add(creature_mesh::deer_head(false).to_mesh()),
@@ -162,13 +182,13 @@ fn spawn_on_ready(
         flocks.0.push(FlockState { centre, target: centre });
         for _ in 0..7 {
             let wings = [
-                spawn_part(&mut commands, &assets, assets.bird_wing.clone()),
-                spawn_part(&mut commands, &assets, assets.bird_wing.clone()),
+                spawn_part(&mut commands, &assets.feather, assets.bird_wing.clone()),
+                spawn_part(&mut commands, &assets.feather, assets.bird_wing.clone()),
             ];
             let bird = commands
                 .spawn((
                     Mesh3d(assets.bird_body.clone()),
-                    MeshMaterial3d(assets.mat.clone()),
+                    MeshMaterial3d(assets.feather.clone()),
                     Transform::from_translation(centre),
                     WorldEntity,
                     DayCreature,
@@ -212,18 +232,18 @@ fn spawn_on_ready(
             let mz = site.z + rng.range(-6.0, 6.0);
             let y = hf.sample_world(mx, mz);
             let head_mesh = assets.deer_head[usize::from(k == 0)].clone(); // one buck per herd
-            let head = spawn_part(&mut commands, &assets, head_mesh);
+            let head = spawn_part(&mut commands, &assets.fur, head_mesh);
             let legs = [
-                spawn_part(&mut commands, &assets, assets.deer_leg.clone()),
-                spawn_part(&mut commands, &assets, assets.deer_leg.clone()),
-                spawn_part(&mut commands, &assets, assets.deer_leg.clone()),
-                spawn_part(&mut commands, &assets, assets.deer_leg.clone()),
+                spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
+                spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
+                spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
+                spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
             ];
             let scale = rng.range(0.82, 1.05);
             let deer = commands
                 .spawn((
                     Mesh3d(assets.deer_body.clone()),
-                    MeshMaterial3d(assets.mat.clone()),
+                    MeshMaterial3d(assets.fur.clone()),
                     Transform::from_xyz(mx + off, y, mz + off)
                         .with_scale(Vec3::splat(scale)),
                     WorldEntity,
@@ -256,8 +276,8 @@ fn spawn_on_ready(
             let y = hf.sample_world(mx, mz) + rng.range(0.5, 1.4);
             let v = rng.next_u32();
             let wings = [
-                spawn_part(&mut commands, &assets, assets.fly_wing[(v % 3) as usize].clone()),
-                spawn_part(&mut commands, &assets, assets.fly_wing[(v % 3) as usize].clone()),
+                spawn_part(&mut commands, &assets.wing[(v % 3) as usize], assets.fly_wing[(v % 3) as usize].clone()),
+                spawn_part(&mut commands, &assets.wing[(v % 3) as usize], assets.fly_wing[(v % 3) as usize].clone()),
             ];
             let fly = commands
                 .spawn((
@@ -293,7 +313,7 @@ fn spawn_on_ready(
                 for side in [-1.0f32, 1.0] {
                     commands.spawn((
                         Mesh3d(assets.fly_wing[*wing_v as usize].clone()),
-                        MeshMaterial3d(assets.mat.clone()),
+                        MeshMaterial3d(assets.wing[*wing_v as usize].clone()),
                         Transform::from_translation(p).with_rotation(
                             Quat::from_rotation_y(-side * std::f32::consts::FRAC_PI_2)
                                 * Quat::from_rotation_z(side * 0.35),
@@ -305,14 +325,14 @@ fn spawn_on_ready(
             let bp = c + Vec3::new(0.8, 1.6, 0.9);
             commands.spawn((
                 Mesh3d(assets.bird_body.clone()),
-                MeshMaterial3d(assets.mat.clone()),
+                MeshMaterial3d(assets.feather.clone()),
                 Transform::from_translation(bp),
                 WorldEntity,
             ));
             for side in [-1.0f32, 1.0] {
                 commands.spawn((
                     Mesh3d(assets.bird_wing.clone()),
-                    MeshMaterial3d(assets.mat.clone()),
+                    MeshMaterial3d(assets.feather.clone()),
                     Transform::from_translation(bp + Vec3::new(0.02, 0.03, 0.04 * side))
                         .with_rotation(
                             Quat::from_rotation_y(-side * std::f32::consts::FRAC_PI_2)
@@ -342,6 +362,9 @@ impl CreatureAssets {
     fn clone_inner(&self) -> CreatureAssets {
         CreatureAssets {
             mat: self.mat.clone(),
+            fur: self.fur.clone(),
+            feather: self.feather.clone(),
+            wing: self.wing.clone(),
             deer_body: self.deer_body.clone(),
             deer_head: self.deer_head.clone(),
             deer_leg: self.deer_leg.clone(),
@@ -353,11 +376,15 @@ impl CreatureAssets {
     }
 }
 
-fn spawn_part(commands: &mut Commands, assets: &CreatureAssets, mesh: Handle<Mesh>) -> Entity {
+fn spawn_part(
+    commands: &mut Commands,
+    mat: &Handle<StandardMaterial>,
+    mesh: Handle<Mesh>,
+) -> Entity {
     commands
         .spawn((
             Mesh3d(mesh),
-            MeshMaterial3d(assets.mat.clone()),
+            MeshMaterial3d(mat.clone()),
             Transform::default(),
             WorldEntity,
         ))
@@ -391,7 +418,9 @@ fn stage_modelshot(
         Bird,
         Fly(usize),
     }
-    let rows = [
+    // WED_MODELSHOT=deer|bird|fly narrows the sheet to one species, camera close-up.
+    let which = std::env::var("WED_MODELSHOT").unwrap_or_default().to_ascii_lowercase();
+    let all = [
         (M::Deer { buck: true }, 1.0f32),
         (M::Deer { buck: false }, 1.0),
         (M::Bird, 2.2),
@@ -399,6 +428,15 @@ fn stage_modelshot(
         (M::Fly(1), 3.0),
         (M::Fly(2), 3.0),
     ];
+    let rows: Vec<(M, f32)> = all
+        .into_iter()
+        .filter(|(m, _)| match which.as_str() {
+            "deer" => matches!(m, M::Deer { .. }),
+            "bird" => matches!(m, M::Bird),
+            "fly" => matches!(m, M::Fly(_)),
+            _ => true,
+        })
+        .collect();
     // Column yaws: front, left profile, back, right profile. The camera sits on the
     // +Z side looking -Z — the sky sun (its +Z lean) then lights the camera-facing side.
     let yaws = [
@@ -418,7 +456,7 @@ fn stage_modelshot(
                     let root = commands
                         .spawn((
                             Mesh3d(assets.deer_body.clone()),
-                            MeshMaterial3d(assets.mat.clone()),
+                            MeshMaterial3d(assets.fur.clone()),
                             tf,
                             WorldEntity,
                         ))
@@ -426,7 +464,7 @@ fn stage_modelshot(
                     let head = commands
                         .spawn((
                             Mesh3d(assets.deer_head[usize::from(*buck)].clone()),
-                            MeshMaterial3d(assets.mat.clone()),
+                            MeshMaterial3d(assets.fur.clone()),
                             Transform::from_translation(Vec3::from_array(creature_mesh::DEER_NECK)),
                             WorldEntity,
                         ))
@@ -438,7 +476,7 @@ fn stage_modelshot(
                         let leg = commands
                             .spawn((
                                 Mesh3d(assets.deer_leg.clone()),
-                                MeshMaterial3d(assets.mat.clone()),
+                                MeshMaterial3d(assets.fur.clone()),
                                 Transform::from_translation(Vec3::from_array(*hip))
                                     .with_rotation(Quat::from_rotation_z(swing)),
                                 WorldEntity,
@@ -451,7 +489,7 @@ fn stage_modelshot(
                     let root = commands
                         .spawn((
                             Mesh3d(assets.bird_body.clone()),
-                            MeshMaterial3d(assets.mat.clone()),
+                            MeshMaterial3d(assets.feather.clone()),
                             tf,
                             WorldEntity,
                         ))
@@ -460,7 +498,7 @@ fn stage_modelshot(
                         let wing = commands
                             .spawn((
                                 Mesh3d(assets.bird_wing.clone()),
-                                MeshMaterial3d(assets.mat.clone()),
+                                MeshMaterial3d(assets.feather.clone()),
                                 Transform::from_translation(Vec3::new(0.02, 0.03, 0.04 * side))
                                     .with_rotation(
                                         Quat::from_rotation_y(
@@ -486,7 +524,7 @@ fn stage_modelshot(
                         let wing = commands
                             .spawn((
                                 Mesh3d(assets.fly_wing[*v].clone()),
-                                MeshMaterial3d(assets.mat.clone()),
+                                MeshMaterial3d(assets.wing[*v].clone()),
                                 Transform::from_translation(Vec3::new(-0.01, 0.005, 0.0))
                                     .with_rotation(
                                         Quat::from_rotation_y(
@@ -503,9 +541,12 @@ fn stage_modelshot(
         }
     }
 
-    // Square-on camera, far enough to hold the whole sheet in a 45° vertical FOV.
-    let centre = base + Vec3::new(0.0, 1.0, 0.0);
-    let eye = centre + Vec3::new(0.0, 0.0, 17.0);
+    // Square-on camera, close enough that the rows fill a 45° vertical FOV.
+    let sheet_h = rows.len() as f32 * 2.4;
+    let row_mid = base + Vec3::new(0.0, (rows.len() as f32 - 1.0) * 1.2 - 5.0 + 0.8, 0.0);
+    let centre = row_mid;
+    let dist = (sheet_h * 1.25).max(9.5).min(17.5);
+    let eye = centre + Vec3::new(0.0, 0.0, dist);
     for (mut tf, mut fc) in &mut cam {
         *tf = Transform::from_translation(eye).looking_at(centre, Vec3::Y);
         let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);

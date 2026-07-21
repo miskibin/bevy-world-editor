@@ -10,6 +10,7 @@ mod capture;
 mod daycycle;
 mod godrays;
 mod creature_mesh;
+mod creature_tex;
 mod creatures;
 mod particles;
 mod weather;
@@ -46,6 +47,16 @@ fn main() {
                 } else {
                     bevy::window::PresentMode::AutoVsync
                 },
+                // WED_RES="2560x1440" sizes the window — high-res screenshot harness.
+                resolution: std::env::var("WED_RES")
+                    .ok()
+                    .and_then(|s| {
+                        let v: Vec<f32> =
+                            s.split(['x', ',']).filter_map(|p| p.trim().parse().ok()).collect();
+                        (v.len() == 2)
+                            .then(|| bevy::window::WindowResolution::new(v[0] as u32, v[1] as u32))
+                    })
+                    .unwrap_or_default(),
                 ..default()
             }),
             ..default()
