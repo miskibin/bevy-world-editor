@@ -41,6 +41,11 @@ impl Default for GenParams {
 #[derive(Resource, Clone)]
 pub struct GeneratedWorld(pub Arc<worldgen::World>);
 
+/// Cached expensive stage (landforms + erosion) — the editor's Apply re-runs only the
+/// cheap downstream half (lakes/maps/trails/scatter) against this.
+#[derive(Resource, Clone)]
+pub struct BaseCache(pub Arc<worldgen::BaseFields>);
+
 // NB: spawn modules trigger on `Res<GeneratedWorld>` change detection, not a message —
 // a message written the frame the resource is queued races the readers (consumed, then
 // the resource isn't there yet; next frame the message is gone).
@@ -52,8 +57,15 @@ pub struct GenProgress {
     pub stage: String,
 }
 
+enum GenOut {
+    /// Fresh generation: new base + world. Repositions the camera.
+    Fresh(worldgen::BaseFields, worldgen::World),
+    /// Editor Apply/Load against a cached base: world only, camera stays put.
+    Applied(worldgen::World),
+}
+
 #[derive(Resource, Default)]
-struct GenTask(Option<(Task<worldgen::World>, Arc<Mutex<(f32, String)>>)>);
+struct GenTask(Option<(Task<GenOut>, Arc<Mutex<(f32, String)>>)>);
 
 pub struct GenPlugin;
 
@@ -73,16 +85,44 @@ fn start_generation(params: &GenParams, task: &mut GenTask, progress: &mut GenPr
     let shared = Arc::new(Mutex::new((0.0f32, String::from("landforms"))));
     let shared2 = shared.clone();
     let t = AsyncComputeTaskPool::get().spawn(async move {
-        worldgen::generate(&p, |f, stage| {
+        let mut cb = |f: f32, stage: &str| {
             if let Ok(mut s) = shared2.lock() {
                 s.0 = f;
                 s.1 = stage.to_string();
             }
-        })
+        };
+        // Staged so the erosion result can be cached for the editor's fast Apply.
+        let base = worldgen::generate_base(&p, &mut cb);
+        let project = worldgen::Project {
+            format_version: 1,
+            name: String::new(),
+            params: p,
+            layers: Vec::new(),
+            rasters: Default::default(),
+        };
+        let world = worldgen::build_world_from_base(&project, &base, &mut cb);
+        GenOut::Fresh(base, world)
     });
     task.0 = Some((t, shared));
     progress.running = true;
     progress.fraction = 0.0;
+}
+
+/// The editor's Apply/Load: rebuild the cheap downstream half against a cached base.
+fn start_apply(project: worldgen::Project, base: Arc<worldgen::BaseFields>, task: &mut GenTask, progress: &mut GenProgress) {
+    let shared = Arc::new(Mutex::new((0.75f32, String::from("apply"))));
+    let shared2 = shared.clone();
+    let t = AsyncComputeTaskPool::get().spawn(async move {
+        let mut cb = |f: f32, stage: &str| {
+            if let Ok(mut s) = shared2.lock() {
+                s.0 = f;
+                s.1 = stage.to_string();
+            }
+        };
+        GenOut::Applied(worldgen::build_world_from_base(&project, &base, &mut cb))
+    });
+    task.0 = Some((t, shared));
+    progress.running = true;
 }
 
 fn kick_initial(params: Res<GenParams>, mut task: ResMut<GenTask>, mut progress: ResMut<GenProgress>) {
@@ -112,6 +152,11 @@ impl Regen<'_> {
         request_regenerate(params, &mut self.task, &mut self.progress);
     }
 
+    /// Editor Apply: downstream rebuild only, camera untouched.
+    pub fn fire_apply(&mut self, project: worldgen::Project, base: Arc<worldgen::BaseFields>) {
+        start_apply(project, base, &mut self.task, &mut self.progress);
+    }
+
     // The panel reads progress through here too — holding its own Res<GenProgress>
     // alongside this param is a B0002 access conflict.
     pub fn running(&self) -> bool {
@@ -139,13 +184,20 @@ fn poll_gen(
         progress.fraction = s.0;
         progress.stage = s.1.clone();
     }
-    if let Some(world) = block_on(future::poll_once(t)) {
+    if let Some(out) = block_on(future::poll_once(t)) {
         task.0 = None;
         progress.running = false;
         progress.fraction = 1.0;
         for e in &old {
             commands.entity(e).despawn();
         }
+        let (world, reposition) = match out {
+            GenOut::Fresh(base, world) => {
+                commands.insert_resource(BaseCache(Arc::new(base)));
+                (world, true)
+            }
+            GenOut::Applied(world) => (world, false),
+        };
         info!(
             "world ready: {} trees, {}x{} cells",
             world.trees.len(),
@@ -157,6 +209,7 @@ fn poll_gen(
         // looking at terrain height + th (default h) over (tx,tz). Pass a smaller `th`
         // to aim DOWN at the ground — with th == h the view is dead horizontal, which
         // is useless for judging ground detail.
+        if reposition {
         if let Some(v) = std::env::var("WED_EYE").ok().map(|s| {
             s.split(',').filter_map(|p| p.trim().parse::<f32>().ok()).collect::<Vec<_>>()
         }) {
@@ -195,6 +248,7 @@ fn poll_gen(
                 fc.yaw = yaw;
                 fc.pitch = pitch;
             }
+        }
         }
         commands.insert_resource(GeneratedWorld(Arc::new(world)));
     }

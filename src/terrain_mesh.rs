@@ -38,11 +38,18 @@ pub struct TerrainQueue {
 /// Chunk pairs meshed per frame. 3 keeps the hitch under ~2 ms on the reference machine.
 const BUILD_BUDGET: usize = 3;
 
+/// Ground-chunk mesh handles keyed by chunk origin — the editor live-patches terrain by
+/// rebuilding a dirty chunk's mesh IN PLACE (`Assets::insert` on the same handle), which
+/// updates every entity using it without despawning anything.
+#[derive(Resource, Default)]
+pub struct GroundChunkIndex(pub bevy::platform::collections::HashMap<(usize, usize), (Handle<Mesh>, Handle<Mesh>)>);
+
 pub struct TerrainMeshPlugin;
 
 impl Plugin for TerrainMeshPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainQueue>()
+            .init_resource::<GroundChunkIndex>()
             .add_systems(Update, (enqueue_on_ready, drain_queue).chain());
     }
 }
@@ -100,6 +107,7 @@ fn drain_queue(
     mut queue: ResMut<TerrainQueue>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut index: ResMut<GroundChunkIndex>,
 ) {
     let Some(world) = world else { return };
     let w = &world.0;
@@ -109,8 +117,11 @@ fn drain_queue(
         let coarse = build_chunk(w, x0, z0, COARSE_STRIDE);
         let aabb = full.compute_aabb();
         let caabb = coarse.compute_aabb();
+        let full_h = meshes.add(full);
+        let coarse_h = meshes.add(coarse);
+        index.0.insert((x0, z0), (full_h.clone(), coarse_h.clone()));
         let mut e = commands.spawn((
-            Mesh3d(meshes.add(full)),
+            Mesh3d(full_h),
             Transform::default(),
             WorldEntity,
             NoCpuCulling,
@@ -125,7 +136,7 @@ fn drain_queue(
             e.insert(aabb);
         }
         let mut ce = commands.spawn((
-            Mesh3d(meshes.add(coarse)),
+            Mesh3d(coarse_h),
             Transform::default(),
             WorldEntity,
             NoCpuCulling,
@@ -309,7 +320,7 @@ fn attach_ground_material(e: &mut EntityCommands, ground: &GroundMaterial) {
 
 /// Build one chunk mesh at the given stride. Stride > 1 adds a perimeter skirt so the
 /// coarse drape hides its seam against full-res neighbours.
-fn build_chunk(w: &worldgen::World, x0: usize, z0: usize, stride: usize) -> Mesh {
+pub fn build_chunk(w: &worldgen::World, x0: usize, z0: usize, stride: usize) -> Mesh {
     let hf = &w.height;
     let size = hf.size;
     let off = world_offset(hf);

@@ -7,7 +7,9 @@
 use crate::heightfield::HeightField;
 use crate::rng::Rng;
 
-#[derive(Clone, Copy)]
+// serde(default): additive erosion params load from old project files (missing = default).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ErosionParams {
     pub droplets: u32,
     /// 0 = follows gradient exactly (jittery), 1 = never turns. ~0.05 natural.

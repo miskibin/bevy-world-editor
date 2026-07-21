@@ -83,7 +83,10 @@ impl HeightField {
     }
 }
 
-#[derive(Clone, Copy)]
+// serde(default) at the container level: any field missing from an older project file
+// falls back to `TerrainParams::default()`, so additive params never break old saves.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TerrainParams {
     pub seed: u32,
     pub size: usize,

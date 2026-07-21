@@ -8,6 +8,7 @@ mod ambience;
 mod atmospherics;
 mod capture;
 mod daycycle;
+mod editor;
 mod godrays;
 mod creature_mesh;
 mod creature_tex;
@@ -89,6 +90,7 @@ fn main() {
             weather::WeatherPlugin,       // clear/rain/snow state + eased dim factors
             particles::ParticlesPlugin,   // pollen/fireflies/leaves/rain/snow quad clouds
             creatures::CreaturesPlugin,   // bird flocks, deer herds, meadow butterflies
+            editor::EditorPlugin,         // brush sculpt/paint, undo, mask overlay
         ))
         .run();
 }

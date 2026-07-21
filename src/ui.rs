@@ -103,6 +103,7 @@ fn panel_ui(
         ResMut<crate::godrays::GodRaySettings>,
         ResMut<crate::weather::Weather>,
     ),
+    editor: (Option<ResMut<crate::editor::EditorState>>, Option<Res<crate::editor::UndoStack>>),
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
     ground: Res<crate::terrain_mat::GroundMaterial>,
@@ -112,6 +113,7 @@ fn panel_ui(
     mut commands: Commands,
 ) -> Result {
     let (mut clock, mut rays, mut weather) = mood;
+    let (ed_state, ed_undo) = editor;
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Forest Generator").default_width(250.0).show(ctx, |ui| {
         // Loud missing-textures banner: without the CC0 sets the terrain silently falls
@@ -201,6 +203,56 @@ fn panel_ui(
                 .changed()
             {
                 clock.day_secs = mins * 60.0;
+            }
+        }
+
+        ui.separator();
+        ui.label("Edit");
+        if let (Some(mut ed), Some(undo)) = (ed_state, ed_undo) {
+            use crate::editor::{MaskCh, Tool};
+            ui.horizontal_wrapped(|ui| {
+                for (t, label) in [
+                    (Tool::Off, "off"),
+                    (Tool::Raise, "raise"),
+                    (Tool::Lower, "lower"),
+                    (Tool::Smooth, "smooth"),
+                    (Tool::Flatten, "flatten"),
+                ] {
+                    ui.selectable_value(&mut ed.tool, t, label);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                for ch in MaskCh::ALL {
+                    ui.selectable_value(&mut ed.tool, Tool::Paint(ch), ch.label());
+                }
+            });
+            let mut radius = ed.radius;
+            if ui.add(egui::Slider::new(&mut radius, 2.0..=80.0).text("brush radius")).changed() {
+                ed.radius = radius;
+            }
+            let mut strength = ed.strength;
+            if ui.add(egui::Slider::new(&mut strength, 0.1..=4.0).text("strength")).changed() {
+                ed.strength = strength;
+            }
+            let (u, r) = undo.depth();
+            ui.label(format!("undo {u} / redo {r}  (Ctrl+Z / Ctrl+Y, RMB = inverse)"));
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    ed.apply_clicked = true;
+                }
+                if ui.button("Save").clicked() {
+                    ed.save_clicked = true;
+                }
+                if ui.button("Load").clicked() {
+                    ed.load_clicked = true;
+                }
+            });
+            let mut path = ed.file_path.clone();
+            if ui.text_edit_singleline(&mut path).changed() {
+                ed.file_path = path;
+            }
+            if !ed.status.is_empty() {
+                ui.label(ed.status.clone());
             }
         }
 

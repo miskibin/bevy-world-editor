@@ -2,10 +2,38 @@
 
 use crate::heightfield::HeightField;
 use crate::noise::fbm;
+use crate::project::LayerRaster;
 use crate::rng::{Rng, lowbias32};
 use crate::tree::Species;
 
-#[derive(Clone, Copy)]
+/// Optional painted-mask inputs to scatter. Both `None` ⇒ scatter is byte-identical to the
+/// pure procedural output (regression-tested). The rasters are the *resolved* effective
+/// weights `w` in 0..1 (the editor bakes layer opacity + stack order in before handing them
+/// here), sampled at the instance's normalised world position.
+#[derive(Default, Clone, Copy)]
+pub struct ScatterMasks<'a> {
+    /// Tree stocking multiplier, neutral at 0.5. See `scatter_masked`.
+    pub forest_density: Option<&'a LayerRaster>,
+    /// Hard exclusion where `w > 0.5` — suppresses trees, rocks AND props.
+    pub clearing: Option<&'a LayerRaster>,
+}
+
+impl ScatterMasks<'_> {
+    /// Clearing weight at world metres (0 when no clearing mask). `ext` = map extent (m).
+    #[inline]
+    fn clearing_w(&self, wx: f32, wz: f32, ext: f32) -> f32 {
+        self.clearing.map_or(0.0, |m| m.sample_norm(wx / ext, wz / ext))
+    }
+    /// ForestDensity weight at world metres, neutral 0.5 when no mask (⇒ multiplier 1.0).
+    #[inline]
+    fn forest_w(&self, wx: f32, wz: f32, ext: f32) -> f32 {
+        self.forest_density.map_or(0.5, |m| m.sample_norm(wx / ext, wz / ext))
+    }
+}
+
+// serde(default): additive forest params load from old project files (missing = default).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ForestParams {
     pub seed: u32,
     /// 0..1 overall stocking, 1 = closed-canopy where the site allows.
@@ -50,11 +78,23 @@ pub struct RockInstance {
 }
 
 /// Boulders + outcrops: slope-loving, noise-clustered, extra along lake shores.
+/// Back-compat wrapper — no masks (byte-identical to the original scatter).
 pub fn scatter_rocks(
     hf: &HeightField,
     slope: &[f32],
     water: &[f32],
     seed: u32,
+) -> Vec<RockInstance> {
+    scatter_rocks_masked(hf, slope, water, seed, &ScatterMasks::default())
+}
+
+/// Mask-aware rock scatter. A `Clearing` mask (`w > 0.5`) suppresses rocks entirely.
+pub fn scatter_rocks_masked(
+    hf: &HeightField,
+    slope: &[f32],
+    water: &[f32],
+    seed: u32,
+    masks: &ScatterMasks,
 ) -> Vec<RockInstance> {
     let ext = hf.extent();
     let spacing = 7.0f32;
@@ -71,6 +111,11 @@ pub fn scatter_rocks(
             let mut rng = Rng::new(site_seed);
             let wx = (gx as f32 + rng.f32()) * spacing;
             let wz = (gz as f32 + rng.f32()) * spacing;
+            // Per-site RNG is independent, so this early-out never perturbs other sites'
+            // draws — the no-mask path is bit-for-bit unchanged.
+            if masks.clearing_w(wx, wz, ext) > 0.5 {
+                continue;
+            }
             let ix = (wx / hf.cell) as usize;
             let iz = (wz / hf.cell) as usize;
             let i = iz * hf.size + ix;
@@ -149,6 +194,7 @@ pub struct PropInstance {
 
 /// Bushes cluster at forest edges (the clearing-noise boundary band), logs/stumps lie
 /// sparsely inside the woods. Trails stay clear.
+/// Back-compat wrapper — no masks (byte-identical to the original scatter).
 pub fn scatter_props(
     hf: &HeightField,
     slope: &[f32],
@@ -156,6 +202,19 @@ pub fn scatter_props(
     water: &[f32],
     trails: &[f32],
     p: &ForestParams,
+) -> Vec<PropInstance> {
+    scatter_props_masked(hf, slope, moisture, water, trails, p, &ScatterMasks::default())
+}
+
+/// Mask-aware prop scatter. A `Clearing` mask (`w > 0.5`) suppresses props entirely.
+pub fn scatter_props_masked(
+    hf: &HeightField,
+    slope: &[f32],
+    moisture: &[f32],
+    water: &[f32],
+    trails: &[f32],
+    p: &ForestParams,
+    masks: &ScatterMasks,
 ) -> Vec<PropInstance> {
     let ext = hf.extent();
     let spacing = 4.4f32;
@@ -173,6 +232,10 @@ pub fn scatter_props(
             let mut rng = Rng::new(site_seed);
             let wx = (gx as f32 + rng.f32()) * spacing;
             let wz = (gz as f32 + rng.f32()) * spacing;
+            // Clearing hard-excludes undergrowth. Per-site RNG ⇒ no-mask path unchanged.
+            if masks.clearing_w(wx, wz, ext) > 0.5 {
+                continue;
+            }
             let ix = ((wx / hf.cell) as usize).min(hf.size - 1);
             let iz = ((wz / hf.cell) as usize).min(hf.size - 1);
             let i = iz * hf.size + ix;
@@ -239,6 +302,7 @@ fn sample_map(map: &[f32], size: usize, cell: f32, wx: f32, wz: f32) -> f32 {
     map[z * size + x]
 }
 
+/// Back-compat wrapper — no masks (byte-identical to the original scatter).
 pub fn scatter(
     hf: &HeightField,
     slope: &[f32],
@@ -246,6 +310,26 @@ pub fn scatter(
     water: &[f32],
     trails: &[f32],
     p: &ForestParams,
+) -> Vec<TreeInstance> {
+    scatter_masked(hf, slope, moisture, water, trails, p, &ScatterMasks::default())
+}
+
+/// Mask-aware tree scatter.
+///
+/// - `ForestDensity` (neutral 0.5) multiplies spawn probability: `w>=0.5 ⇒ ×(1+(w-0.5)·2)`
+///   (up to 2×), `w<0.5 ⇒ ×(w·2)` (down to 0). Trees only.
+/// - `Clearing` (`w>0.5`) hard-excludes the site.
+///
+/// With both masks `None` the result is bit-for-bit identical to the pure scatter (the
+/// density multiplier is exactly 1.0 at the neutral 0.5, and no early-out fires).
+pub fn scatter_masked(
+    hf: &HeightField,
+    slope: &[f32],
+    moisture: &[f32],
+    water: &[f32],
+    trails: &[f32],
+    p: &ForestParams,
+    masks: &ScatterMasks,
 ) -> Vec<TreeInstance> {
     let ext = hf.extent();
     let n = (ext / p.spacing) as i32;
@@ -263,6 +347,10 @@ pub fn scatter(
             let mut rng = Rng::new(site_seed);
             let wx = (gx as f32 + rng.f32()) * p.spacing;
             let wz = (gz as f32 + rng.f32()) * p.spacing;
+            // Clearing hard-exclusion. Per-site RNG ⇒ no-mask path bit-identical.
+            if masks.clearing_w(wx, wz, ext) > 0.5 {
+                continue;
+            }
             let h = hf.sample_world(wx, wz);
             let s = sample_map(slope, hf.size, hf.cell, wx, wz);
             let m = sample_map(moisture, hf.size, hf.cell, wx, wz);
@@ -291,7 +379,11 @@ pub fn scatter(
                 continue;
             }
             // Stocking: denser on moist, gentler ground.
-            let stock = p.density * alt_ok * (0.45 + 0.55 * m) * (1.0 - (s / p.max_slope) * 0.5);
+            let mut stock = p.density * alt_ok * (0.45 + 0.55 * m) * (1.0 - (s / p.max_slope) * 0.5);
+            // ForestDensity mask: neutral 0.5 ⇒ ×1.0 (no-op, keeps the no-mask path exact);
+            // painted up ⇒ up to 2× stocking, painted down ⇒ toward a bare clearing.
+            let fw = masks.forest_w(wx, wz, ext);
+            stock *= if fw >= 0.5 { 1.0 + (fw - 0.5) * 2.0 } else { fw * 2.0 };
             if !rng.chance(stock) {
                 continue;
             }

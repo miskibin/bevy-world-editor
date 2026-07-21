@@ -2,5 +2,16 @@
 name = "worldgen"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
+# Project format (RON) + sidecar raster IO (PNG16 height deltas / PNG8 masks). These are
+# the ONLY non-std deps in this otherwise pure-logic crate; they carry no Bevy/graphics.
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+png = "0.18"
+
+[dev-dependencies]
+# Test-only: parse the export bundle's hand-written manifest.json / meta.json back to
+# verify the exporter's round-trips (the exporter itself hand-writes JSON, no serde).
+serde_json = "1"

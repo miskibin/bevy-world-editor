@@ -1,0 +1,17 @@
+[package]
+name = "wedcli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Headless CLI (`wed`) for the NatureScene world editor — generate + export bundles."
+
+# The binary is `wed`, not `wedcli`.
+[[bin]]
+name = "wed"
+path = "src/main.rs"
+
+[dependencies]
+worldgen = { path = "../worldgen" }
+# Lenient project-file (RON) reading. We only pull the `params` field out via a generic
+# `ron::Value` walk here — the full typed project loader is a separate module.
+ron = "0.12"

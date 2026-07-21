@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/worldgen"]
+members = ["crates/worldgen", "crates/wedcli"]
 
 [package]
 name = "bevy_world_editor"
