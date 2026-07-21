@@ -9,6 +9,8 @@ mod atmospherics;
 mod capture;
 mod daycycle;
 mod godrays;
+mod particles;
+mod weather;
 mod dof;
 mod flycam;
 mod foliage;
@@ -71,6 +73,8 @@ fn main() {
             profile::ProfilePlugin,       // WED_PROFILE scripted benchmark
             daycycle::DayCyclePlugin,     // sun/moon clock, stars, mood driving
             godrays::GodRaysPlugin,       // screen-space light shafts from the sun
+            weather::WeatherPlugin,       // clear/rain/snow state + eased dim factors
+            particles::ParticlesPlugin,   // pollen/fireflies/leaves/rain/snow quad clouds
         ))
         .run();
 }

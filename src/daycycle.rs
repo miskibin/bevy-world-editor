@@ -148,6 +148,7 @@ fn advance_clock(
     mut env: Query<&mut EnvironmentMapLight>,
     mut exposure: Query<&mut bevy::camera::Exposure>,
     gfx: Res<crate::ui::GfxSettings>,
+    dim: Res<crate::weather::WeatherDim>,
     mut stars: Query<&mut Transform, (With<StarDome>, Without<Sun>, Without<Moon>)>,
     mut clear: ResMut<ClearColor>,
     star_mat: Option<Res<StarMat>>,
@@ -166,16 +167,19 @@ fn advance_clock(
     let night = 1.0 - twilight;
     // Warmth peaks at the horizon.
     let warm = (1.0 - elev.abs() * 3.0).clamp(0.0, 1.0);
+    // 0 = clear skies, 1 = full precip (dim.sun bottoms out at 0.25 in heavy rain).
+    let overcast = ((1.0 - dim.sun) / 0.75).clamp(0.0, 1.0);
 
     // ── Sun ──────────────────────────────────────────────────────────────────────
     if let Ok((mut tf, mut light)) = sun.single_mut() {
         *tf = Transform::from_translation(dir * 100.0).looking_at(Vec3::ZERO, Vec3::Y);
-        light.illuminance = 32_000.0 * daylight + 900.0 * twilight;
+        light.illuminance = (32_000.0 * daylight + 900.0 * twilight) * dim.sun;
         let day_col = Vec3::new(1.0, 0.96, 0.88);
         let horizon_col = Vec3::new(1.0, 0.55, 0.28);
         let c = day_col.lerp(horizon_col, warm);
         light.color = Color::srgb(c.x, c.y, c.z);
-        light.shadow_maps_enabled = twilight > 0.05;
+        // Overcast kills the hard sun shadows well before the light is fully dimmed.
+        light.shadow_maps_enabled = twilight > 0.05 && overcast < 0.55;
     }
     // ── Moon: opposite the sun, cool and dim ────────────────────────────────────
     if let Ok((mut tf, mut light)) = moon.single_mut() {
@@ -193,34 +197,45 @@ fn advance_clock(
         e.ev100 = gfx.ev100 - 4.5 * night;
     }
     // ── Ambient + IBL ────────────────────────────────────────────────────────────
-    ambient.brightness = 40.0 + 300.0 * twilight;
+    ambient.brightness = (40.0 + 300.0 * twilight) * dim.ambient;
     let amb_day = Vec3::new(0.85, 0.92, 1.0);
     let amb_night = Vec3::new(0.45, 0.55, 0.85);
     let a = amb_night.lerp(amb_day, twilight);
     ambient.color = Color::srgb(a.x, a.y, a.z);
     for mut e in &mut env {
-        e.intensity = 60.0 + 1440.0 * twilight * twilight;
+        e.intensity = (60.0 + 1440.0 * twilight * twilight) * dim.ambient;
     }
     // ── Fog colours (atmospherics inherits these live) ──────────────────────────
     for mut f in &mut fog {
         let day = Vec3::new(0.80, 0.76, 0.64);
         let dusk = Vec3::new(0.85, 0.48, 0.30);
         let night_c = Vec3::new(0.05, 0.07, 0.13);
-        let c = if twilight > 0.0 {
+        let mut c = if twilight > 0.0 {
             day.lerp(dusk, warm).lerp(night_c, night)
         } else {
             night_c
         };
+        // Precip greys the haze out.
+        c = c.lerp(Vec3::splat(0.55) * twilight.max(0.08), overcast * 0.8);
         f.color = Color::srgba(c.x, c.y, c.z, 1.0);
         let g_day = Vec3::new(1.0, 0.95, 0.85);
         let g_dusk = Vec3::new(1.0, 0.55, 0.25);
         let g = g_day.lerp(g_dusk, warm) * twilight.max(0.05);
         f.directional_light_color = Color::srgba(g.x, g.y, g.z, 0.6);
+        // Weather thickens the fog: visibility scales by the eased fog_mul. The UI's
+        // on-change write uses the same formula, so the two never fight.
+        if gfx.fog {
+            f.falloff = bevy::pbr::FogFalloff::from_visibility_colors(
+                gfx.visibility * dim.fog_mul,
+                Color::srgb(0.42, 0.48, 0.55),
+                Color::srgb(0.68, 0.76, 0.88),
+            );
+        }
     }
     // ── Backdrop: the procedural Atmosphere goes transparent once the sun sets, so
     // whatever ClearColor shows through IS the night sky. Fade it day-blue → near-black.
     {
-        let day_c = Vec3::new(0.62, 0.75, 0.92);
+        let day_c = Vec3::new(0.62, 0.75, 0.92).lerp(Vec3::splat(0.62), overcast * 0.8);
         let night_c = Vec3::new(0.010, 0.014, 0.030);
         let c = night_c.lerp(day_c, twilight);
         clear.0 = Color::srgb(c.x, c.y, c.z);

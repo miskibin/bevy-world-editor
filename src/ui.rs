@@ -97,8 +97,12 @@ fn panel_ui(
     mut gfx: ResMut<GfxSettings>,
     mut audio: ResMut<crate::ambience::AudioSettings>,
     mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
-    mut clock: ResMut<crate::daycycle::DayClock>,
-    mut rays: ResMut<crate::godrays::GodRaySettings>,
+    // Bundled: egui panel systems bump into the 16-param SystemParam cap.
+    mood: (
+        ResMut<crate::daycycle::DayClock>,
+        ResMut<crate::godrays::GodRaySettings>,
+        ResMut<crate::weather::Weather>,
+    ),
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
     ground: Res<crate::terrain_mat::GroundMaterial>,
@@ -107,6 +111,7 @@ fn panel_ui(
     mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
     mut commands: Commands,
 ) -> Result {
+    let (mut clock, mut rays, mut weather) = mood;
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Forest Generator").default_width(250.0).show(ctx, |ui| {
         // Loud missing-textures banner: without the CC0 sets the terrain silently falls
@@ -197,6 +202,18 @@ fn panel_ui(
             {
                 clock.day_secs = mins * 60.0;
             }
+        }
+
+        ui.separator();
+        ui.label("Weather");
+        {
+            use crate::weather::WeatherMode;
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut weather.mode, WeatherMode::Clear, "clear");
+                ui.selectable_value(&mut weather.mode, WeatherMode::Rain, "rain");
+                ui.selectable_value(&mut weather.mode, WeatherMode::Snow, "snow");
+            });
+            ui.add(egui::Slider::new(&mut weather.intensity, 0.0..=1.0).text("intensity"));
         }
 
         ui.separator();
