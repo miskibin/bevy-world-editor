@@ -7,6 +7,7 @@ pub mod heightfield;
 pub mod lakes;
 pub mod maps;
 pub mod noise;
+pub mod path;
 pub mod rng;
 pub mod scatter;
 pub mod trails;
@@ -14,6 +15,7 @@ pub mod tree;
 
 pub use creatures::{creature_sites, CreatureSite, SiteKind};
 pub use erosion::ErosionParams;
+pub use path::{find_path, PathGrid};
 pub use heightfield::{HeightField, TerrainParams};
 pub use scatter::{ForestParams, PropInstance, RockInstance, TreeInstance};
 pub use tree::{ALL_SPECIES, Species, TreeSkeleton};

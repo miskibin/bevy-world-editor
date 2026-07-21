@@ -5,6 +5,7 @@
 //! neck dips) applied to child part entities. Creatures further than `ANIM_RANGE`
 //! from the camera skip their per-frame work entirely.
 
+use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
 use crate::creature_mesh;
@@ -14,13 +15,18 @@ use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
 
 const ANIM_RANGE: f32 = 260.0;
 
+/// Coarse A* navigation grid over the generated world (4 m cells; water and cliffs
+/// are impassable). Rebuilt whenever the world regenerates.
+#[derive(Resource, Default)]
+struct NavGrid(Option<worldgen::PathGrid>);
+
 pub struct CreaturesPlugin;
 
 impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Flocks>().add_systems(
+        app.init_resource::<Flocks>().init_resource::<NavGrid>().add_systems(
             Update,
-            (spawn_on_ready, drive_birds, drive_deer, drive_butterflies, day_gate),
+            (spawn_on_ready, drive_birds, drive_deer, drive_butterflies, day_gate, night_howls),
         );
         if std::env::var("WED_CREATURELINE").is_ok() {
             app.add_systems(Update, stage_creatureline);
@@ -48,9 +54,24 @@ struct CreatureAssets {
 
 // ── Components ─────────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq)]
+enum FlockMode {
+    Fly,
+    Land,
+    Ground,
+    Rise,
+}
+
 struct FlockState {
     centre: Vec3,
     target: Vec3,
+    mode: FlockMode,
+    /// Seconds left in the current mode.
+    timer: f32,
+    /// 0 = airborne, 1 = on the ground (eased through Land/Rise).
+    blend: f32,
+    /// Where the flock is parked while grounded.
+    ground: Vec3,
 }
 
 #[derive(Resource, Default)]
@@ -63,6 +84,8 @@ struct Bird {
     radius: f32,
     bob: f32,
     wings: [Entity; 2],
+    /// This bird's parking offset in the grounded flock.
+    ground_off: Vec2,
 }
 
 #[derive(Component)]
@@ -73,6 +96,8 @@ enum DeerState {
     Graze,
     Amble,
     Flee,
+    Rest,
+    Alert,
 }
 
 #[derive(Component)]
@@ -86,6 +111,15 @@ struct Deer {
     legs: [Entity; 4],
     /// Eased head-dip weight (1 = nose in the grass).
     dip: f32,
+    /// Eased lying-down weight (Rest folds the legs, lowers the body).
+    rest: f32,
+    /// Eased locomotion weight (leg swing / body bob fade in and out).
+    gait: f32,
+    /// A* waypoints (map space) the amble follows; empty = straight wander.
+    path: Vec<(f32, f32)>,
+    wp: usize,
+    /// Cooldown until the next vocalisation.
+    call_in: f32,
 }
 
 #[derive(Component)]
@@ -93,6 +127,8 @@ struct Butterfly {
     home: Vec3,
     phase: f32,
     wings: [Entity; 2],
+    /// Eased sitting weight (1 = perched, wings fanning slowly).
+    sit: f32,
 }
 
 // ── Spawning ───────────────────────────────────────────────────────────────────────
@@ -162,6 +198,7 @@ fn spawn_on_ready(
     let ext = hf.extent();
     let mut rng = worldgen::rng::Rng::new(0xC4EA);
     let sites = worldgen::creature_sites(&world.0);
+    commands.insert_resource(NavGrid(Some(worldgen::PathGrid::build(&world.0))));
 
     // ── Bird flocks: anywhere over the map, high above the terrain. ──
     // WED_CREATURELINE pins flock 0 over the staged meadow (a shot can frame it).
@@ -179,7 +216,14 @@ fn spawn_on_ready(
         };
         let y = hf.sample_world(mx, mz) + rng.range(35.0, 55.0);
         let centre = Vec3::new(mx + off, y, mz + off);
-        flocks.0.push(FlockState { centre, target: centre });
+        flocks.0.push(FlockState {
+            centre,
+            target: centre,
+            mode: FlockMode::Fly,
+            timer: rng.range(18.0, 40.0),
+            blend: 0.0,
+            ground: centre,
+        });
         for _ in 0..7 {
             let wings = [
                 spawn_part(&mut commands, &assets.feather, assets.bird_wing.clone()),
@@ -198,6 +242,7 @@ fn spawn_on_ready(
                         radius: rng.range(14.0, 30.0),
                         bob: rng.range(0.0, std::f32::consts::TAU),
                         wings,
+                        ground_off: Vec2::new(rng.range(-2.2, 2.2), rng.range(-2.2, 2.2)),
                     },
                 ))
                 .id();
@@ -256,6 +301,11 @@ fn spawn_on_ready(
                         head,
                         legs,
                         dip: 1.0,
+                        rest: 0.0,
+                        gait: 0.0,
+                        path: Vec::new(),
+                        wp: 0,
+                        call_in: rng.range(6.0, 30.0),
                     },
                 ))
                 .id();
@@ -290,6 +340,7 @@ fn spawn_on_ready(
                         home: Vec3::new(mx + off, y, mz + off),
                         phase: rng.range(0.0, std::f32::consts::TAU),
                         wings,
+                        sit: 0.0,
                     },
                 ))
                 .id();
@@ -618,58 +669,127 @@ fn drive_birds(
     let camp = cam_pos(&cam);
 
     let pinned = std::env::var("WED_CREATURELINE").is_ok();
-    // Flock anchors drift between waypoints.
     for (i, f) in flocks.0.iter_mut().enumerate() {
-        if pinned && i == 0 {
-            continue;
+        // Mode clock: fly -> land -> peck about -> rise -> fly.
+        f.timer -= dt;
+        if f.timer <= 0.0 {
+            let mut rng = worldgen::rng::Rng::new((t * 977.0) as u32 ^ (i as u32 * 6151));
+            match f.mode {
+                FlockMode::Fly => {
+                    // Only land on dry ground; over a lake just keep flying.
+                    let mx = f.centre.x - off;
+                    let mz = f.centre.z - off;
+                    let size = hf.size;
+                    let ix = (mx.max(0.0) as usize).min(size - 1);
+                    let iz = (mz.max(0.0) as usize).min(size - 1);
+                    if world.0.water[iz * size + ix].is_finite() {
+                        f.timer = rng.range(8.0, 15.0);
+                    } else {
+                        f.ground = Vec3::new(f.centre.x, hf.sample_world(mx, mz), f.centre.z);
+                        f.mode = FlockMode::Land;
+                        f.timer = 3.0;
+                    }
+                }
+                FlockMode::Land => {
+                    f.mode = FlockMode::Ground;
+                    f.timer = rng.range(10.0, 22.0);
+                }
+                FlockMode::Ground => {
+                    f.mode = FlockMode::Rise;
+                    f.timer = 3.0;
+                }
+                FlockMode::Rise => {
+                    f.mode = FlockMode::Fly;
+                    f.timer = rng.range(20.0, 45.0);
+                }
+            }
         }
-        if f.centre.distance(f.target) < 12.0 {
-            // Cheap deterministic-ish retarget from time + index.
-            let mut rng = worldgen::rng::Rng::new((t * 977.0) as u32 ^ (i as u32 * 7919));
-            let mx = rng.range(ext * 0.15, ext * 0.85);
-            let mz = rng.range(ext * 0.15, ext * 0.85);
-            let y = hf.sample_world(mx, mz) + rng.range(32.0, 58.0);
-            f.target = Vec3::new(mx + off, y, mz + off);
+        // A landed flock startles airborne if the camera closes in.
+        if matches!(f.mode, FlockMode::Ground | FlockMode::Land)
+            && f.ground.distance(camp) < 9.0
+        {
+            f.mode = FlockMode::Rise;
+            f.timer = 2.0;
         }
-        let dir = (f.target - f.centre).normalize_or_zero();
-        f.centre += dir * 6.5 * dt;
+        let want = match f.mode {
+            FlockMode::Fly | FlockMode::Rise => 0.0,
+            FlockMode::Land | FlockMode::Ground => 1.0,
+        };
+        f.blend += (want - f.blend) * (dt * 1.0).min(1.0);
+
+        // Anchor drift only while airborne (a grounded flock stays put).
+        if (!pinned || i != 0) && matches!(f.mode, FlockMode::Fly) {
+            if f.centre.distance(f.target) < 12.0 {
+                let mut rng = worldgen::rng::Rng::new((t * 977.0) as u32 ^ (i as u32 * 7919));
+                let mx = rng.range(ext * 0.15, ext * 0.85);
+                let mz = rng.range(ext * 0.15, ext * 0.85);
+                let y = hf.sample_world(mx, mz) + rng.range(32.0, 58.0);
+                f.target = Vec3::new(mx + off, y, mz + off);
+            }
+            let dir = (f.target - f.centre).normalize_or_zero();
+            f.centre += dir * 6.5 * dt * (1.0 - f.blend);
+        }
     }
 
     for (bird, mut tf) in &mut birds {
         let f = &flocks.0[bird.flock];
         if f.centre.distance(camp) > 700.0 {
-            continue; // too far to matter
+            continue;
         }
-        // Circle the anchor; angular speed inversely with radius (constant airspeed).
+        // Airborne pose: constant-airspeed circling with a glide/flap cycle.
         let w = 9.0 / bird.radius;
         let ang = t * w + bird.phase;
-        let (s, c) = ang.sin_cos();
-        let pos = f.centre
-            + Vec3::new(c * bird.radius, (t * 0.7 + bird.bob).sin() * 2.2, s * bird.radius);
-        // Velocity direction = tangent.
-        let vel = Vec3::new(-s, 0.0, c);
-        let yaw = f32::atan2(-vel.z, vel.x);
-        tf.translation = pos;
-        // Bank into the turn.
-        tf.rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-0.35);
-        // Flap: glide (slow shallow) most of the time, burst on the bob's rising edge.
-        let flap = (t * 8.0 + bird.phase * 3.0).sin() * 0.55;
+        let (sa, ca) = ang.sin_cos();
+        let air = f.centre
+            + Vec3::new(ca * bird.radius, (t * 0.7 + bird.bob).sin() * 2.2, sa * bird.radius);
+        let vel = Vec3::new(-sa, 0.0, ca);
+        let air_yaw = f32::atan2(-vel.z, vel.x);
+        // Grounded pose: parked at the flock spot, slow look-around.
+        let grd = f.ground + Vec3::new(bird.ground_off.x, 0.02, bird.ground_off.y);
+        let grd_yaw = bird.phase + (t * 0.35 + bird.phase * 2.0).sin() * 1.2;
+
+        let k = f.blend * f.blend * (3.0 - 2.0 * f.blend); // smoothstep
+        tf.translation = air.lerp(grd, k);
+        // Peck: quick nose-dips while grounded.
+        let peck = if k > 0.8 {
+            let cycle = (t * 0.9 + bird.phase * 1.7).sin().max(0.0);
+            cycle.powi(6) * 0.7
+        } else {
+            0.0
+        };
+        let yaw = if k < 0.5 { air_yaw } else { grd_yaw };
+        tf.rotation = Quat::from_rotation_y(yaw)
+            * Quat::from_rotation_x(-0.35 * (1.0 - k))
+            * Quat::from_rotation_z(-peck);
+
+        // Wings: flap bursts + glides airborne; big flare while transitioning; folded
+        // tight against the body on the ground.
+        let flap_gate = ((t * 0.31 + bird.phase).sin() * 2.5).clamp(0.0, 1.0);
+        let air_flap = (t * 8.0 + bird.phase * 3.0).sin() * (0.15 + 0.4 * flap_gate);
+        let flare = (k * (1.0 - k)) * 4.0; // peaks mid-transition
+        let flap = air_flap * (1.0 - k) + (t * 6.0).sin() * 0.8 * flare;
+        let fold = 1.05 * k; // sweep the wing back along the body when grounded
         for (side, w_ent) in [(1.0f32, bird.wings[0]), (-1.0, bird.wings[1])] {
             if let Ok(mut wtf) = parts.get_mut(w_ent) {
-                wtf.translation = Vec3::new(0.02, 0.03, 0.04 * side);
-                wtf.rotation = Quat::from_rotation_y(-side * std::f32::consts::FRAC_PI_2)
-                    * Quat::from_rotation_z(side * flap);
+                wtf.translation = Vec3::new(0.02 - 0.05 * k, 0.03, 0.04 * side);
+                wtf.rotation =
+                    Quat::from_rotation_y(-side * (std::f32::consts::FRAC_PI_2 - fold))
+                        * Quat::from_rotation_z(side * (flap + 0.10 * k));
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive_deer(
     time: Res<Time>,
     world: Option<Res<GeneratedWorld>>,
+    nav: Res<NavGrid>,
     mut deer: Query<(&mut Deer, &mut Transform), Without<FlyCam>>,
     mut parts: Query<&mut Transform, (Without<Deer>, Without<FlyCam>)>,
     cam: Query<&Transform, With<FlyCam>>,
+    mut commands: Commands,
+    asset: Res<AssetServer>,
 ) {
     let Some(world) = world else { return };
     let hf = &world.0.height;
@@ -683,45 +803,124 @@ fn drive_deer(
         if dist_cam > ANIM_RANGE {
             continue;
         }
-        // Startle: flee straight away from the camera.
-        if dist_cam < 15.0 && d.state != DeerState::Flee {
+        // Threat response: freeze and stare first, bolt when pressed.
+        if dist_cam < 26.0 && !matches!(d.state, DeerState::Flee | DeerState::Alert) {
+            d.state = DeerState::Alert;
+            d.timer = 2.2;
+            let to_cam = (camp - tf.translation).with_y(0.0).normalize_or_zero();
+            d.yaw = f32::atan2(-to_cam.z, to_cam.x);
+            d.path.clear();
+        }
+        if dist_cam < 13.0 && d.state != DeerState::Flee {
             d.state = DeerState::Flee;
-            d.timer = 4.0;
+            d.timer = 4.5;
             let away = (tf.translation - camp).with_y(0.0).normalize_or_zero();
             d.yaw = f32::atan2(-away.z, away.x);
+            d.path.clear();
+            // Alarm snort, louder up close.
+            let vol = (1.0 - dist_cam / 30.0).clamp(0.2, 1.0) * 0.8;
+            commands.spawn((
+                AudioPlayer(asset.load::<AudioSource>("audio/deer-2.ogg")),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(vol)),
+            ));
         }
-        d.timer -= dt;
-        if d.timer <= 0.0 {
-            // Cycle behaviours; drift back toward home so herds don't scatter forever.
-            let mut rng = worldgen::rng::Rng::new((t * 613.0) as u32 ^ d.phase.to_bits());
-            d.state = if matches!(d.state, DeerState::Graze) {
-                DeerState::Amble
-            } else {
-                DeerState::Graze
-            };
-            d.timer = rng.range(2.5, 8.0);
-            if matches!(d.state, DeerState::Amble) {
-                let here = Vec2::new(tf.translation.x - off, tf.translation.z - off);
-                let to_home = d.home - here;
-                let head_home = to_home.length() > 24.0;
-                d.yaw = if head_home {
-                    f32::atan2(-to_home.y, to_home.x)
-                } else {
-                    rng.range(0.0, std::f32::consts::TAU)
-                };
+        // Occasional soft call while calm and near enough to hear.
+        d.call_in -= dt;
+        if d.call_in <= 0.0 {
+            let mut rng = worldgen::rng::Rng::new((t * 631.0) as u32 ^ d.phase.to_bits());
+            d.call_in = rng.range(18.0, 55.0);
+            if dist_cam < 55.0 && matches!(d.state, DeerState::Graze | DeerState::Amble) {
+                let vol = (1.0 - dist_cam / 60.0).clamp(0.1, 0.6) * 0.5;
+                commands.spawn((
+                    AudioPlayer(asset.load::<AudioSource>("audio/deer-1.ogg")),
+                    PlaybackSettings::DESPAWN.with_volume(Volume::Linear(vol)),
+                ));
             }
         }
+
+        d.timer -= dt;
+        if d.timer <= 0.0 {
+            let mut rng = worldgen::rng::Rng::new((t * 613.0) as u32 ^ d.phase.to_bits());
+            let here = Vec2::new(tf.translation.x - off, tf.translation.z - off);
+            d.state = match d.state {
+                DeerState::Alert | DeerState::Flee | DeerState::Rest => DeerState::Graze,
+                DeerState::Graze => {
+                    let roll = rng.next_u32() % 100;
+                    if roll < 55 {
+                        DeerState::Amble
+                    } else if roll < 75 && dist_cam > 35.0 {
+                        DeerState::Rest
+                    } else {
+                        DeerState::Graze
+                    }
+                }
+                DeerState::Amble => DeerState::Graze,
+            };
+            d.timer = match d.state {
+                DeerState::Rest => rng.range(14.0, 28.0),
+                DeerState::Amble => 30.0, // ended early when the path completes
+                _ => rng.range(3.0, 9.0),
+            };
+            d.path.clear();
+            d.wp = 0;
+            if matches!(d.state, DeerState::Amble) {
+                // Plot an A* amble to a fresh spot around home (falls back to a
+                // straight wander when no path fits the expansion budget).
+                let goal_ang = rng.range(0.0, std::f32::consts::TAU);
+                let goal_r = rng.range(8.0, 26.0);
+                let goal = (
+                    (d.home.x + goal_ang.cos() * goal_r).clamp(6.0, hf.extent() - 6.0),
+                    (d.home.y + goal_ang.sin() * goal_r).clamp(6.0, hf.extent() - 6.0),
+                );
+                if let Some(grid) = nav.0.as_ref() {
+                    if let Some(path) = worldgen::find_path(grid, (here.x, here.y), goal, 3000)
+                    {
+                        d.path = path;
+                        d.wp = 0;
+                    }
+                }
+                if d.path.is_empty() {
+                    d.yaw = rng.range(0.0, std::f32::consts::TAU);
+                }
+            }
+        }
+
         let speed = match d.state {
-            DeerState::Graze => 0.0,
-            DeerState::Amble => 0.85,
+            DeerState::Graze | DeerState::Rest | DeerState::Alert => 0.0,
+            DeerState::Amble => 0.9,
             DeerState::Flee => 4.2,
         };
         if speed > 0.0 {
+            // Follow the plotted waypoints when there are any; else straight + bounce.
+            if !d.path.is_empty() {
+                let here = Vec2::new(tf.translation.x - off, tf.translation.z - off);
+                while d.wp < d.path.len() {
+                    let w = Vec2::new(d.path[d.wp].0, d.path[d.wp].1);
+                    if here.distance(w) < 1.2 {
+                        d.wp += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if d.wp >= d.path.len() {
+                    d.state = DeerState::Graze;
+                    d.timer = 3.0;
+                    d.path.clear();
+                } else {
+                    let w = Vec2::new(d.path[d.wp].0, d.path[d.wp].1);
+                    let want = f32::atan2(-(w.y - here.y), w.x - here.x);
+                    // Turn-rate limit so the walk arcs instead of snapping.
+                    let mut diff = (want - d.yaw).rem_euclid(std::f32::consts::TAU);
+                    if diff > std::f32::consts::PI {
+                        diff -= std::f32::consts::TAU;
+                    }
+                    d.yaw += diff.clamp(-2.8 * dt, 2.8 * dt);
+                }
+            }
             let dir = Vec3::new(d.yaw.cos(), 0.0, -d.yaw.sin());
             let next = tf.translation + dir * speed * dt;
             let mx = next.x - off;
             let mz = next.z - off;
-            // Stay on the map and out of the lakes.
             let ext = hf.extent();
             let dry = mx > 8.0 && mz > 8.0 && mx < ext - 8.0 && mz < ext - 8.0 && {
                 let size = hf.size;
@@ -733,27 +932,52 @@ fn drive_deer(
                 tf.translation = next;
                 tf.translation.y = hf.sample_world(mx, mz);
             } else {
-                d.yaw += 1.7; // bounce off the shoreline
+                d.yaw += 1.7;
+                d.path.clear();
             }
         }
-        tf.rotation = Quat::from_rotation_y(d.yaw);
 
-        // Head: nose down while grazing, up and alert otherwise (eased).
-        let want_dip = if matches!(d.state, DeerState::Graze) { 1.0 } else { 0.0 };
+        // -- Pose blending ------------------------------------------------------
+        let run = (speed / 4.2).clamp(0.0, 1.0);
+        d.gait += ((if speed > 0.0 { 1.0 } else { 0.0 }) - d.gait) * (dt * 5.0).min(1.0);
+        let want_rest = if matches!(d.state, DeerState::Rest) { 1.0 } else { 0.0 };
+        d.rest += (want_rest - d.rest) * (dt * 1.6).min(1.0);
+
+        // Body: bob with the gait, rock with the gallop, sink when lying.
+        let rate = 5.0 + 6.5 * run;
+        let bob = (t * rate * 2.0 + d.phase).sin() * 0.03 * d.gait;
+        let pitch = (t * rate + d.phase + 0.7).sin() * 0.075 * run * d.gait;
+        tf.translation.y =
+            hf.sample_world(tf.translation.x - off, tf.translation.z - off) + bob
+                - 0.40 * d.rest;
+        tf.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_z(pitch);
+
+        // Head: grazing nose-down with nibble bobs and periodic look-up scans;
+        // Alert/Rest carry it high.
+        let scanning = (((t * 0.13 + d.phase).fract() < 0.20) as u32) as f32;
+        let want_dip = match d.state {
+            DeerState::Graze => 1.0 - 0.85 * scanning,
+            _ => 0.0,
+        };
         d.dip += (want_dip - d.dip) * (dt * 3.0).min(1.0);
         if let Ok(mut htf) = parts.get_mut(d.head) {
             htf.translation = Vec3::from_array(creature_mesh::DEER_NECK);
-            htf.rotation = Quat::from_rotation_z(-1.75 * d.dip);
+            let nibble = (t * 3.3 + d.phase).sin() * 0.10 * d.dip;
+            htf.rotation = Quat::from_rotation_z(-1.75 * d.dip + nibble);
         }
-        // Legs: diagonal-pair walk swing, amplitude with speed.
-        let amp = 0.55 * (speed / 4.2).clamp(0.0, 1.0) + 0.25 * (speed > 0.0) as u32 as f32;
-        let rate = if matches!(d.state, DeerState::Flee) { 11.0 } else { 5.0 };
+        // Legs: diagonal walk -> grouped gallop by `run`; folded under when lying.
+        let amp = (0.42 + 0.42 * run) * d.gait * (1.0 - d.rest);
         for (i, leg) in d.legs.iter().enumerate() {
             if let Ok(mut ltf) = parts.get_mut(*leg) {
-                let pair = if i == 0 || i == 3 { 0.0 } else { std::f32::consts::PI };
+                let front = i < 2;
+                let diag = if i == 0 || i == 3 { 0.0 } else { std::f32::consts::PI };
+                let gallop = if front { 0.0 } else { std::f32::consts::PI * 0.55 };
+                let phase = diag * (1.0 - run) + gallop * run;
+                // Fold: front legs tuck backward, hind legs forward.
+                let fold = if front { 1.5 } else { -1.5 } * d.rest;
                 ltf.translation = Vec3::from_array(creature_mesh::DEER_HIPS[i]);
                 ltf.rotation =
-                    Quat::from_rotation_z((t * rate + pair + d.phase).sin() * amp);
+                    Quat::from_rotation_z((t * rate + phase + d.phase).sin() * amp + fold);
             }
         }
     }
@@ -761,38 +985,89 @@ fn drive_deer(
 
 fn drive_butterflies(
     time: Res<Time>,
-    mut flies: Query<(&Butterfly, &mut Transform), Without<FlyCam>>,
+    world: Option<Res<GeneratedWorld>>,
+    mut flies: Query<(&mut Butterfly, &mut Transform), Without<FlyCam>>,
     mut parts: Query<&mut Transform, (Without<Butterfly>, Without<FlyCam>)>,
     cam: Query<&Transform, With<FlyCam>>,
 ) {
+    let Some(world) = world else { return };
+    let hf = &world.0.height;
+    let off = world_offset(hf);
     let t = time.elapsed_secs();
+    let dt = time.delta_secs();
     let camp = cam_pos(&cam);
-    for (fly, mut tf) in &mut flies {
+    for (mut fly, mut tf) in &mut flies {
         if fly.home.distance(camp) > 160.0 {
             continue;
         }
         let p = fly.phase;
-        // Lissajous wander around the home flower patch + jittery bob.
-        let pos = fly.home
+        // Perch cycle: settle on the grass for a while, then flutter off. A close
+        // camera flushes them airborne.
+        let wants_sit = ((((t * 0.045 + p * 0.7).fract() < 0.35)
+            && tf.translation.distance(camp) > 6.0) as u32) as f32;
+        fly.sit += (wants_sit - fly.sit) * (dt * 1.4).min(1.0);
+
+        // Airborne wander around the home flower patch.
+        let air = fly.home
             + Vec3::new(
                 (t * 0.53 + p).sin() * 3.2 + (t * 1.7 + p * 2.0).sin() * 0.5,
                 (t * 1.1 + p).sin() * 0.5 + (t * 3.9 + p).sin() * 0.14,
                 (t * 0.61 + p * 1.3).cos() * 3.2 + (t * 1.9 + p).cos() * 0.5,
             );
+        // Perch: a fixed spot on the ground near home.
+        let perch = {
+            let px = fly.home.x + (p * 7.9).sin() * 2.0;
+            let pz = fly.home.z + (p * 5.3).cos() * 2.0;
+            Vec3::new(px, hf.sample_world(px - off, pz - off) + 0.05, pz)
+        };
+        let k = fly.sit * fly.sit * (3.0 - 2.0 * fly.sit);
+        let pos = air.lerp(perch, k);
         let vel = pos - tf.translation;
-        if vel.length_squared() > 1e-6 {
+        if vel.length_squared() > 1e-6 && k < 0.8 {
             let yaw = f32::atan2(-vel.z, vel.x);
             tf.rotation = Quat::from_rotation_y(yaw);
         }
         tf.translation = pos;
-        let flap = (t * 11.0 + p * 5.0).sin() * 1.1;
+        // Wings: fast flight flap -> slow, nearly-closed fanning while perched.
+        let flight = (t * 11.0 + p * 5.0).sin() * 1.1;
+        let fanning = 1.15 + (t * 1.3 + p).sin() * 0.30;
+        let angle = flight * (1.0 - k) + fanning * k;
         for (side, w_ent) in [(1.0f32, fly.wings[0]), (-1.0, fly.wings[1])] {
             if let Ok(mut wtf) = parts.get_mut(w_ent) {
                 wtf.translation = Vec3::new(-0.01, 0.005, 0.0);
                 wtf.rotation = Quat::from_rotation_y(-side * std::f32::consts::FRAC_PI_2)
-                    * Quat::from_rotation_z(side * flap);
+                    * Quat::from_rotation_z(side * angle);
             }
         }
+    }
+}
+
+/// Distant wolf howls after dark — sells the night even though no wolf is modelled.
+/// deer-1/2 + wolf-1/2 are the Warbell clips; volumes stay low (ambience, not jumpscare).
+fn night_howls(
+    time: Res<Time>,
+    clock: Res<DayClock>,
+    mut next_in: Local<f32>,
+    mut commands: Commands,
+    asset: Res<AssetServer>,
+) {
+    let elev = sun_dir(clock.t).y;
+    if elev > -0.08 {
+        return;
+    }
+    if *next_in <= 0.0 {
+        *next_in = 50.0; // first howl a while after dusk
+        return;
+    }
+    *next_in -= time.delta_secs();
+    if *next_in <= 0.0 {
+        let mut rng = worldgen::rng::Rng::new((time.elapsed_secs() * 733.0) as u32);
+        let clip = if rng.next_u32() % 2 == 0 { "audio/wolf-1.ogg" } else { "audio/wolf-2.ogg" };
+        commands.spawn((
+            AudioPlayer(asset.load::<AudioSource>(clip)),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(rng.range(0.10, 0.22))),
+        ));
+        *next_in = rng.range(70.0, 160.0);
     }
 }
 
