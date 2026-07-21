@@ -41,7 +41,7 @@ fn drain_props(
     let (Some(assets), Some(plain)) = (assets, plain) else { return };
     let range = VisibilityRange {
         start_margin: 0.0..0.0,
-        end_margin: PROP_FAR..PROP_FAR + 40.0,
+        end_margin: PROP_FAR..PROP_FAR + 12.0,
         use_aabb: true,
     };
     for _ in 0..4 {
@@ -49,7 +49,7 @@ fn drain_props(
         let mesh = data.to_mesh();
         let aabb = mesh.compute_aabb();
         let this_range = if kind == 2 {
-            VisibilityRange { start_margin: 0.0..0.0, end_margin: 90.0..110.0, use_aabb: true }
+            VisibilityRange { start_margin: 0.0..0.0, end_margin: 90.0..100.0, use_aabb: true }
         } else {
             range.clone()
         };
@@ -223,7 +223,7 @@ fn rebuild_on_ready(
     plain_res: Option<Res<PlainPropMaterial>>,
 ) {
     let (Some(world), Some(_assets)) = (world, assets) else { return };
-    if !world.is_changed() {
+    if !world.is_changed() || std::env::var("WED_NOPROPS").is_ok() {
         return;
     }
     let off = world_offset(&world.0.height);

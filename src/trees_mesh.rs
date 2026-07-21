@@ -458,9 +458,11 @@ fn build_tree_assets(
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None, wt).to_mesh()),
                 lod0_leaf: meshes.add(build_sprigs(&sk, sp, 1, 1.0, true, ft).to_mesh()),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None, wt).to_mesh()),
-                // Uncrossed + every-2nd, upsized: the LOD1 ring holds the most trees on
-                // screen, so its per-tree quad count decides the frame budget.
-                lod1_leaf: meshes.add(build_sprigs(&sk, sp, 2, 1.45, false, ft).to_mesh()),
+                // CROSSED cards are non-negotiable at this ring: single quads vanish
+                // edge-on, so whole crowns went transparent at grazing angles (the
+                // see-through-forest artifact). Every-3rd + upsized keeps the quad
+                // budget near the old every-2nd uncrossed count.
+                lod1_leaf: meshes.add(build_sprigs(&sk, sp, 3, 1.75, true, ft).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
                 billboard_data: build_billboard(&sk, sp, ft),

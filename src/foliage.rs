@@ -295,13 +295,65 @@ pub fn build_atlas() -> Image {
         bark_strip(&mut cv, qx, qy, sp, &mut rng);
     }
 
-    let mut img = Image::new(
+    // Alpha-aware mip chain. Without mips the alpha-masked cards UNDERSAMPLE at
+    // 80 m+: per-frame sparkle that SMAA/supersampling average into pale translucent
+    // rectangles — whole crowns look like you can see the world through them. Colour
+    // is alpha-weighted (no transparent-black bleed) and alpha is re-scaled per level
+    // so the masked coverage survives the cutoff instead of dissolving.
+    let mut data = Vec::new();
+    let mut level = cv.px;
+    let (mut w, mut h) = (ATLAS, ATLAS);
+    data.extend_from_slice(&level);
+    let mut mips = 1;
+    while w > 1 || h > 1 {
+        let nw = (w / 2).max(1);
+        let nh = (h / 2).max(1);
+        let mut next = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let (mut rs, mut gs, mut bs, mut asum) = (0u32, 0u32, 0u32, 0u32);
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let sx = (x * 2 + dx).min(w - 1);
+                    let sy = (y * 2 + dy).min(h - 1);
+                    let i = ((sy * w + sx) * 4) as usize;
+                    let a = level[i + 3] as u32;
+                    rs += level[i] as u32 * a;
+                    gs += level[i + 1] as u32 * a;
+                    bs += level[i + 2] as u32 * a;
+                    asum += a;
+                }
+                let o = ((y * nw + x) * 4) as usize;
+                if asum > 0 {
+                    next[o] = (rs / asum) as u8;
+                    next[o + 1] = (gs / asum) as u8;
+                    next[o + 2] = (bs / asum) as u8;
+                }
+                // Coverage: hold the silhouette for the first levels (box-filtered
+                // alpha erodes it), then DECAY it — deep mips otherwise solidify every
+                // card into a full grey rectangle, which is the blockier half of the
+                // see-through artifact.
+                let scaled = if mips <= 3 {
+                    (asum / 4) * 13 / 10
+                } else {
+                    (asum / 4) * 8 / 10
+                };
+                next[o + 3] = scaled.min(255) as u8;
+            }
+        }
+        data.extend_from_slice(&next);
+        level = next;
+        w = nw;
+        h = nh;
+        mips += 1;
+    }
+    let mut img = Image::new_uninit(
         Extent3d { width: ATLAS, height: ATLAS, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        cv.px,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    img.texture_descriptor.mip_level_count = mips;
+    img.data = Some(data);
     img.sampler = crate::texload::repeat_sampler();
     img
 }

@@ -233,7 +233,7 @@ fn spawn_on_ready(
                 .spawn((
                     Mesh3d(assets.bird_body.clone()),
                     MeshMaterial3d(assets.feather.clone()),
-                    Transform::from_translation(centre),
+                    Transform::from_translation(centre).with_scale(Vec3::splat(1.45)),
                     WorldEntity,
                     DayCreature,
                     Bird {
@@ -284,7 +284,7 @@ fn spawn_on_ready(
                 spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
                 spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
             ];
-            let scale = rng.range(0.82, 1.05);
+            let scale = rng.range(1.30, 1.55); // red-deer stature — roe-sized reads toy-like under 25 m pines
             let deer = commands
                 .spawn((
                     Mesh3d(assets.deer_body.clone()),

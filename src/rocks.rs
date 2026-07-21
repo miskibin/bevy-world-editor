@@ -117,7 +117,7 @@ fn rebuild_on_ready(
             NoCpuCulling,
             VisibilityRange {
                 start_margin: 0.0..0.0,
-                end_margin: ROCK_FAR..ROCK_FAR + 80.0,
+                end_margin: ROCK_FAR..ROCK_FAR + 30.0,
                 use_aabb: true,
             },
         ));

@@ -19,13 +19,18 @@ use crate::trees_mesh::{MeshData, TreeAssets, species_index};
 const CHUNK_M: f32 = 64.0;
 /// LOD swap distances (camera → tree).
 // UE-research: the full-mesh alpha-card ring is where overdraw lives — keep it tight.
-const LOD0_END: f32 = 48.0;
-const LOD1_END: f32 = 170.0;
+const LOD0_END: f32 = 75.0;
+const LOD1_END: f32 = 230.0; // full-mesh->billboard swap pushed out of the readable range
 /// Per-tree entities stop here — beyond it the merged chunk meshes take over. Keeping
 /// this SHORT is what makes big maps affordable:each tree costs 4 entities, so a 700 m
 /// radius on a 1 km map meant ~60k entities and a 100 ms frame (measured).
 const LOD2_END: f32 = 300.0;
-const LOD_BAND: f32 = 18.0;
+// ZERO on purpose: Bevy's visibility-range dither is per-entity, so the fade-out of
+// one LOD tier and the fade-in of the next are NOT complementary — inside any nonzero
+// band every tree renders half-dissolved and the backdrop shows through the canopy
+// (a permanent see-through ring at the tier distance in stills). Hard swaps pop
+// slightly in motion but never punch holes.
+const LOD_BAND: f32 = 2.0;
 /// Chunks fully inside this radius get individual trees.
 const NEAR_RADIUS: f32 = LOD2_END + 60.0;
 /// Merged-LOD2 tier hands off to the ultra billboards here.
@@ -35,7 +40,9 @@ const ULTRA_START: f32 = 900.0;
 /// AABB centre — so equal thresholds leave a band (up to half a chunk wide) where a tree
 /// is past its own cutoff but its chunk hasn't started: trees vanish at distance. The
 /// overlap costs a little double-draw in the band and is the only robust fix.
-const MERGED_START: f32 = 170.0;
+// Aligned EXACTLY with the last per-tree tier's end — a gap makes trees vanish in the
+// ring between, an overlap double-draws it.
+const MERGED_START: f32 = LOD1_END;
 
 pub struct ForestPlugin;
 
@@ -102,6 +109,9 @@ fn drain_far_queue(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(assets) = assets else { return };
+    if std::env::var("WED_NOFAR").is_ok() {
+        return; // bisection aid: no merged/ultra far tiers
+    }
     for _ in 0..2 {
         let Some(key) = index.far_pending.pop() else { break };
         let Some(trees) = index.chunks.get(&key) else { continue };
@@ -224,6 +234,10 @@ fn stream_near_chunks(
                 scale: Vec3::splat(t.scale),
             };
             let bark = assets.bark_mats[species_index(t.species)].clone();
+            // WED_LOD0FAR=1: diagnostic — full meshes across the whole near ring and
+            // NO LOD1 entities at all.
+            let lod0far = std::env::var("WED_LOD0FAR").is_ok();
+            let lod0_end = if lod0far { LOD1_END } else { LOD0_END };
             let range = |start: f32, end: f32| VisibilityRange {
                 start_margin: if start == 0.0 { 0.0..0.0 } else { start..start + LOD_BAND },
                 end_margin: end..end + LOD_BAND,
@@ -238,7 +252,7 @@ fn stream_near_chunks(
                         WorldEntity,
                         NoCpuCulling,
                         NearTree,
-                        range(0.0, LOD0_END),
+                        range(0.0, lod0_end),
                     ))
                     .id(),
             );
@@ -251,10 +265,13 @@ fn stream_near_chunks(
                         WorldEntity,
                         NoCpuCulling,
                         NearTree,
-                        range(0.0, LOD0_END),
+                        range(0.0, lod0_end),
                     ))
                     .id(),
             );
+            if lod0far {
+                continue;
+            }
             ents.push(
                 commands
                     .spawn((
@@ -264,7 +281,7 @@ fn stream_near_chunks(
                         WorldEntity,
                         NoCpuCulling,
                         NearTree,
-                        range(LOD0_END, LOD1_END),
+                        range(lod0_end, LOD1_END),
                     ))
                     .id(),
             );
@@ -280,7 +297,7 @@ fn stream_near_chunks(
                         // Shadow casting only from the LOD0 ring — the mid-ring canopy
                         // shadow pass was a large chunk of the 17-fps regression.
                         NotShadowCaster,
-                        range(LOD0_END, LOD1_END),
+                        range(lod0_end, LOD1_END),
                     ))
                     .id(),
             );

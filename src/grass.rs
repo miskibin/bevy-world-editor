@@ -15,8 +15,11 @@ use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
 use crate::trees_mesh::{LeafMaterial, LeafSway};
 
 const CHUNK_M: f32 = 16.0;
-const RING: f32 = 55.0;
-const FADE: f32 = 10.0;
+const RING: f32 = 85.0; // fade edge pushed where blades are near-subpixel + haze covers
+// Wide on purpose: the fade is measured per 16 m chunk AABB, so a narrow band makes
+// neighbouring chunks jump in visibly different opacity steps (pale 16 m blocks at the
+// ring edge, worst over shadowed ground). A wide band keeps adjacent steps small.
+const FADE: f32 = 30.0;
 /// Candidate sites per chunk axis (16 m / ~0.85 m spacing).
 const SITES: i32 = 19;
 
