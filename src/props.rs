@@ -222,7 +222,7 @@ fn rebuild_on_ready(
     mut queue: ResMut<PropQueue>,
     plain_res: Option<Res<PlainPropMaterial>>,
 ) {
-    let (Some(world), Some(assets)) = (world, assets) else { return };
+    let (Some(world), Some(_assets)) = (world, assets) else { return };
     if !world.is_changed() {
         return;
     }
@@ -268,11 +268,6 @@ fn rebuild_on_ready(
         }
     }
 
-    let range = VisibilityRange {
-        start_margin: 0.0..0.0,
-        end_margin: PROP_FAR..PROP_FAR + 40.0,
-        use_aabb: true,
-    };
     if plain_res.is_none() {
         commands.insert_resource(PlainPropMaterial(mats.add(StandardMaterial {
             perceptual_roughness: 0.85,

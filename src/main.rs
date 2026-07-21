@@ -7,6 +7,8 @@
 mod ambience;
 mod atmospherics;
 mod capture;
+mod daycycle;
+mod godrays;
 mod dof;
 mod flycam;
 mod foliage;
@@ -67,6 +69,8 @@ fn main() {
             dof::DofPlugin,               // far-distance bokeh soften (Warbell port)
             stats::StatsPlugin,           // F2 stats overlay + WED_GPUSTRESS/WED_PERFLOG
             profile::ProfilePlugin,       // WED_PROFILE scripted benchmark
+            daycycle::DayCyclePlugin,     // sun/moon clock, stars, mood driving
+            godrays::GodRaysPlugin,       // screen-space light shafts from the sun
         ))
         .run();
 }

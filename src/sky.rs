@@ -28,9 +28,13 @@ use crate::flycam::FlyCam;
 
 const IBL_INTENSITY: f32 = 1500.0;
 
-/// Marker for the sun light (atmospherics reads its direction).
+/// Marker for the sun light (atmospherics + day cycle read its direction).
 #[derive(Component)]
 pub struct Sun;
+
+/// Marker for the night's key light (driven by the day cycle).
+#[derive(Component)]
+pub struct Moon;
 
 pub struct SkyPlugin;
 
@@ -116,6 +120,7 @@ fn setup_camera(
             FlyCam::new(yaw, pitch),
             crate::atmospherics::default_atmospherics(),
             crate::dof::default_dof(),
+            crate::godrays::default_godrays(),
         ),
     )).id();
 
@@ -153,6 +158,27 @@ fn setup_sun(mut commands: Commands) {
         .build(),
         // Fixed pleasant morning angle (~35° up, from the south-east).
         Transform::from_xyz(0.8, 0.7, 0.5).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    // The moon — spawned dark; the day cycle drives its intensity/direction at night.
+    commands.spawn((
+        Moon,
+        DirectionalLight {
+            color: Color::srgb(0.55, 0.66, 1.0),
+            illuminance: 0.0,
+            shadow_maps_enabled: false,
+            shadow_depth_bias: 0.05,
+            shadow_normal_bias: 2.2,
+            ..default()
+        },
+        CascadeShadowConfigBuilder {
+            num_cascades: 4,
+            maximum_distance: 700.0,
+            first_cascade_far_bound: 40.0,
+            ..default()
+        }
+        .build(),
+        Transform::from_xyz(-0.8, 0.7, -0.5).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 

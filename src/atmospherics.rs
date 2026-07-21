@@ -159,7 +159,10 @@ fn drive_atmospherics(
         return;
     };
     let dir = sun_tf.translation().normalize_or_zero();
-    let fade = if settings.enabled { settings.strength } else { 0.0 };
+    // Full haze by day, a thin floor at night (fog colour already turns navy after dark).
+    let daylight = ((dir.y + 0.05) * 4.0).clamp(0.0, 1.0);
+    let fade =
+        if settings.enabled { settings.strength * (0.25 + 0.75 * daylight) } else { 0.0 };
     for (cam_tf, cam, fog, mut atmo) in &mut cams {
         let view = cam_tf.to_matrix();
         atmo.world_from_clip = view * cam.clip_from_view().inverse();

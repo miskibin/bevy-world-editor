@@ -97,6 +97,8 @@ fn panel_ui(
     mut gfx: ResMut<GfxSettings>,
     mut audio: ResMut<crate::ambience::AudioSettings>,
     mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
+    mut clock: ResMut<crate::daycycle::DayClock>,
+    mut rays: ResMut<crate::godrays::GodRaySettings>,
     mut dof_q: Query<(Entity, &mut crate::dof::Dof), With<Camera3d>>,
     mut ter_mats: ResMut<Assets<crate::terrain_mat::TerrainMaterial>>,
     ground: Res<crate::terrain_mat::GroundMaterial>,
@@ -176,6 +178,28 @@ fn panel_ui(
         ui.add(egui::Slider::new(&mut p.forest.water_level, 0.0..=16.0).text("water level"));
 
         ui.separator();
+        ui.label("Time");
+        {
+            let mut hours = clock.t * 24.0;
+            if ui
+                .add(egui::Slider::new(&mut hours, 0.0..=24.0).text("time of day"))
+                .changed()
+            {
+                clock.t = (hours / 24.0).rem_euclid(1.0);
+            }
+            let mut mins = clock.day_secs / 60.0;
+            if ui
+                .add(
+                    egui::Slider::new(&mut mins, 0.0..=60.0)
+                        .text("day length (min, 0 = paused)"),
+                )
+                .changed()
+            {
+                clock.day_secs = mins * 60.0;
+            }
+        }
+
+        ui.separator();
         ui.label("Graphics");
         let mut changed = false;
         // Weak-GPU master switch. Applied on toggle AND once at boot (WED_LOWGFX).
@@ -244,6 +268,7 @@ fn panel_ui(
         ui.checkbox(&mut atmo.enabled, "cinematic haze");
         if atmo.enabled {
             ui.add(egui::Slider::new(&mut atmo.strength, 0.0..=2.0).text("haze strength"));
+            ui.checkbox(&mut rays.enabled, "god rays");
         }
         if let Ok((_, mut dof)) = dof_q.single_mut() {
             ui.add(egui::Slider::new(&mut dof.max_radius, 0.0..=12.0).text("far blur"));
