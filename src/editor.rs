@@ -329,6 +329,179 @@ fn finish_load(
     state.status = "applying loaded layers...".into();
 }
 
+/// `WED_EDITDEMO=paint|apply` — screenshot staging: programmatically sculpts a hill,
+/// flattens a camp shelf, paints a clearing + a path + a forest-boost blob, then either
+/// leaves the paint overlay up (`paint`) or fires Apply (`apply`) so the shot shows the
+/// scatter reacting. Runs once, after the world and layers are ready.
+#[allow(clippy::too_many_arguments)]
+fn stage_editdemo(
+    mut done: Local<bool>,
+    mut state: ResMut<EditorState>,
+    mut layers: ResMut<EditLayers>,
+    mut world: Option<ResMut<GeneratedWorld>>,
+    index: Res<GroundChunkIndex>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut overlay: ResMut<OverlayAssets>,
+    mut cam: Query<(&mut Transform, &mut crate::flycam::FlyCam)>,
+) {
+    if *done || layers.res == 0 || index.0.is_empty() {
+        return;
+    }
+    let mode = std::env::var("WED_EDITDEMO").unwrap_or_default();
+    let Some(world) = world.as_mut() else { return };
+    // Wait until every chunk is meshed so the in-place rebuilds land on real handles.
+    let res = layers.res;
+    let n_chunks = res / CHUNK;
+    if index.0.len() < n_chunks * n_chunks {
+        return;
+    }
+    *done = true;
+
+    // Stage on DRY ground: hill on the first meadow, clearing in the nearest forest
+    // floor (the map centre is frequently a lake).
+    let sites = worldgen::creature_sites(&world.0);
+    let meadow = sites
+        .iter()
+        .find(|s| matches!(s.kind, worldgen::SiteKind::Meadow))
+        .map(|s| (s.x, s.z))
+        .unwrap_or((res as f32 * 0.3, res as f32 * 0.3));
+    let forest = sites
+        .iter()
+        .filter(|s| matches!(s.kind, worldgen::SiteKind::ForestFloor))
+        .min_by(|a, b| {
+            let da = (a.x - meadow.0).hypot(a.z - meadow.1);
+            let db = (b.x - meadow.0).hypot(b.z - meadow.1);
+            da.total_cmp(&db)
+        })
+        .map(|s| (s.x, s.z))
+        .unwrap_or((meadow.0 + 60.0, meadow.1));
+
+    let w = world.bypass_change_detection();
+    let Some(w0) = std::sync::Arc::get_mut(&mut w.0) else { return };
+
+    // Sculpt: a 22 m hill on the meadow and a flattened camp shelf beside it.
+    let hill = (meadow.0, meadow.1, 30.0f32, 22.0f32);
+    let shelf = (meadow.0 + 42.0, meadow.1 + 18.0, 16.0f32);
+    let shelf_h = w0.height.get(shelf.0 as usize, shelf.1 as usize);
+    for z in 0..res {
+        for x in 0..res {
+            let i = z * res + x;
+            let mut d = 0.0f32;
+            let dh = ((x as f32 - hill.0).powi(2) + (z as f32 - hill.1).powi(2)).sqrt();
+            if dh < hill.2 {
+                let q = 1.0 - (dh / hill.2).powi(2);
+                d += hill.3 * q * q;
+            }
+            let ds = ((x as f32 - shelf.0).powi(2) + (z as f32 - shelf.1).powi(2)).sqrt();
+            if ds < shelf.2 {
+                let cur = layers.base_height[i];
+                let k = (1.0 - (ds / shelf.2).powi(2)).clamp(0.0, 1.0);
+                d += (shelf_h - cur - d) * k;
+            }
+            if d.abs() > 1e-4 {
+                layers.height_delta[i] += d;
+                w0.height.h[i] = layers.base_height[i] + layers.height_delta[i];
+            }
+        }
+    }
+    // Rebuild every touched chunk in place.
+    for cz in 0..n_chunks {
+        for cx in 0..n_chunks {
+            let x0 = cx * CHUNK;
+            let z0 = cz * CHUNK;
+            let near = |c: f32, lo: f32, hi: f32| c >= lo - 40.0 && c <= hi + 40.0;
+            let touches = (near(hill.0, x0 as f32, (x0 + CHUNK) as f32)
+                && near(hill.1, z0 as f32, (z0 + CHUNK) as f32))
+                || (near(shelf.0, x0 as f32, (x0 + CHUNK) as f32)
+                    && near(shelf.1, z0 as f32, (z0 + CHUNK) as f32));
+            if touches {
+                if let Some((full, coarse)) = index.0.get(&(x0, z0)) {
+                    let _ = meshes.insert(full.id(), build_chunk(w0, x0, z0, 1));
+                    let _ = meshes.insert(coarse.id(), build_chunk(w0, x0, z0, 4));
+                }
+            }
+        }
+    }
+
+    // Masks: clearing circle in the forest, forest-boost blob, a path linking them.
+    let clearing = (forest.0, forest.1, 26.0f32);
+    let boost = (meadow.0 - 55.0, meadow.1 + 40.0, 24.0f32);
+    for z in 0..res {
+        for x in 0..res {
+            let i = z * res + x;
+            let dc = ((x as f32 - clearing.0).powi(2) + (z as f32 - clearing.1).powi(2)).sqrt();
+            if dc < clearing.2 {
+                layers.masks[MaskCh::Clearing.idx()][i] = 255;
+            }
+            let db = ((x as f32 - boost.0).powi(2) + (z as f32 - boost.1).powi(2)).sqrt();
+            if db < boost.2 {
+                layers.masks[MaskCh::Forest.idx()][i] = 255;
+            }
+        }
+    }
+    // Path: straight stroke from the clearing toward the hill.
+    let steps = 260;
+    for k in 0..=steps {
+        let t = k as f32 / steps as f32;
+        let px = clearing.0 + (hill.0 - clearing.0) * t;
+        let pz = clearing.1 + (hill.1 - clearing.1) * t;
+        for dz in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let x = (px as i32 + dx).clamp(0, res as i32 - 1) as usize;
+                let z = (pz as i32 + dz).clamp(0, res as i32 - 1) as usize;
+                layers.masks[MaskCh::Path.idx()][z * res + x] = 255;
+            }
+        }
+    }
+    layers.dirty_since_apply = true;
+
+    let off = world_offset(&w0.height);
+    // Frame the whole scene: camera above the midpoint, looking across hill+clearing.
+    let mid = ((hill.0 + clearing.0) * 0.5, (hill.1 + clearing.1) * 0.5);
+    let dirx = clearing.0 - hill.0;
+    let dirz = clearing.1 - hill.1;
+    let len = (dirx * dirx + dirz * dirz).sqrt().max(1.0);
+    let (px, pz) = (-dirz / len, dirx / len); // perpendicular
+    let dist = len * 1.15 + 70.0;
+    let eye_map = (mid.0 + px * dist, mid.1 + pz * dist);
+    let eye = Vec3::new(
+        eye_map.0 + off,
+        w0.height.sample_world(eye_map.0, eye_map.1) + 95.0,
+        eye_map.1 + off,
+    );
+    let target = Vec3::new(
+        mid.0 + off,
+        w0.height.sample_world(mid.0, mid.1) + 5.0,
+        mid.1 + off,
+    );
+    for (mut tf, mut fc) in &mut cam {
+        *tf = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+        let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+        fc.yaw = yaw;
+        fc.pitch = pitch;
+    }
+    if mode == "apply" {
+        state.tool = Tool::Off;
+        state.apply_clicked = true;
+    } else {
+        // Leave the paint overlay + brush ring up for the shot.
+        state.tool = Tool::Paint(MaskCh::Clearing);
+        state.radius = 26.0;
+        let hx = clearing.0 + off;
+        let hz = clearing.1 + off;
+        let hy = w0.height.sample_world(clearing.0, clearing.1);
+        state.cursor_hit = Some(Vec3::new(hx, hy, hz));
+        overlay.refresh = true;
+    }
+    info!(
+        "editdemo staged ({mode}): hill at world ({:.0},{:.0}), clearing at ({:.0},{:.0})",
+        hill.0 + off,
+        hill.1 + off,
+        clearing.0 + off,
+        clearing.1 + off
+    );
+}
+
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
@@ -354,6 +527,9 @@ impl Plugin for EditorPlugin {
                 )
                     .chain(),
             );
+        if std::env::var("WED_EDITDEMO").is_ok() {
+            app.add_systems(Update, stage_editdemo.after(init_layers).before(apply_stroke));
+        }
     }
 }
 
@@ -364,6 +540,7 @@ fn init_layers(
     mut layers: ResMut<EditLayers>,
     mut undo: ResMut<UndoStack>,
     mut keep: ResMut<KeepLayers>,
+    mut state: ResMut<EditorState>,
 ) {
     let Some(world) = world else { return };
     if !world.is_changed() {
@@ -376,6 +553,7 @@ fn init_layers(
         if let Some(base) = base {
             layers.base_height = base.0.height.h.clone();
         }
+        state.status = "applied".into();
         return;
     }
     let hf = &world.0.height;
