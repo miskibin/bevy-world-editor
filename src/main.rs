@@ -9,6 +9,8 @@ mod atmospherics;
 mod capture;
 mod daycycle;
 mod godrays;
+mod creature_mesh;
+mod creatures;
 mod particles;
 mod weather;
 mod dof;
@@ -75,6 +77,7 @@ fn main() {
             godrays::GodRaysPlugin,       // screen-space light shafts from the sun
             weather::WeatherPlugin,       // clear/rain/snow state + eased dim factors
             particles::ParticlesPlugin,   // pollen/fireflies/leaves/rain/snow quad clouds
+            creatures::CreaturesPlugin,   // bird flocks, deer herds, meadow butterflies
         ))
         .run();
 }

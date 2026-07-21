@@ -1,6 +1,7 @@
 //! Pure, deterministic world generation — no Bevy, no I/O. The Bevy app consumes the
 //! `World` output (heightfield + derived maps + tree instances) and turns it into meshes.
 
+pub mod creatures;
 pub mod erosion;
 pub mod heightfield;
 pub mod lakes;
@@ -11,6 +12,7 @@ pub mod scatter;
 pub mod trails;
 pub mod tree;
 
+pub use creatures::{creature_sites, CreatureSite, SiteKind};
 pub use erosion::ErosionParams;
 pub use heightfield::{HeightField, TerrainParams};
 pub use scatter::{ForestParams, PropInstance, RockInstance, TreeInstance};

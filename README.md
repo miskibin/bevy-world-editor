@@ -43,7 +43,11 @@ mixer, Regenerate.
 | `WED_SHOT=out.png` | render, warm up, save a screenshot, exit |
 | `WED_CLIP=dir` (+`_FRAMES`/`_FPS`/`_WARMUP`/`_ORBIT`) | frame-sequence recorder (ffmpeg stitches) |
 | `WED_CAM="x,y,z,tx,ty,tz"` | fixed camera pose |
-| `WED_EYE="x,z,h,tx,tz"` | camera at terrain height + h (map-space coords) |
+| `WED_EYE="x,z,h,tx,tz[,th]"` | camera at terrain height + h (world-space coords) |
+| `WED_TIME=0..1` | stage a time of day (0.5 = noon) — shots freeze the clock |
+| `WED_WEATHER=rain\|snow[,intensity]` | stage weather |
+| `WED_GODRAYS="int,decay,dens,weight,thr,samples"` | god-ray tuning override |
+| `WED_CREATURELINE=1` | park review creatures (deer herd + bird + butterflies) at the first meadow and aim the camera |
 | `WED_SEED=n` | world seed |
 | `WED_LODLINE=1` | tree LOD review grid instead of the forest |
 | `WED_ATMO="..."` | atmospherics tuning override |
