@@ -25,6 +25,9 @@ impl Plugin for CreaturesPlugin {
         if std::env::var("WED_CREATURELINE").is_ok() {
             app.add_systems(Update, stage_creatureline);
         }
+        if std::env::var("WED_MODELSHOT").is_ok() {
+            app.add_systems(Update, stage_modelshot);
+        }
     }
 }
 
@@ -361,6 +364,158 @@ fn spawn_part(commands: &mut Commands, assets: &CreatureAssets, mesh: Handle<Mes
         .id()
 }
 
+/// `WED_MODELSHOT=1` — studio contact sheet: every creature model in 4 orientations
+/// (front / left / back / right), rows stacked vertically in open air against the sky,
+/// camera parked square-on. Pair with `WED_SHOT` for a review PNG.
+fn stage_modelshot(
+    world: Option<Res<GeneratedWorld>>,
+    assets: Option<Res<CreatureAssets>>,
+    mut commands: Commands,
+    mut cam: Query<(&mut Transform, &mut FlyCam)>,
+    mut done: Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    let (Some(world), Some(assets)) = (world, assets) else { return };
+    let hf = &world.0.height;
+    // Stage floats well above the map centre — no terrain, no occlusion, sky backdrop.
+    let base =
+        Vec3::new(0.0, hf.sample_world(hf.extent() * 0.5, hf.extent() * 0.5) + 110.0, 0.0);
+    let assets = assets.clone_inner();
+
+    // (label kind, scale) rows bottom-to-top; scales are review-only so the small
+    // models read at the same framing distance as the deer.
+    enum M {
+        Deer { buck: bool },
+        Bird,
+        Fly(usize),
+    }
+    let rows = [
+        (M::Deer { buck: true }, 1.0f32),
+        (M::Deer { buck: false }, 1.0),
+        (M::Bird, 2.2),
+        (M::Fly(0), 3.0),
+        (M::Fly(1), 3.0),
+        (M::Fly(2), 3.0),
+    ];
+    // Column yaws: front, left profile, back, right profile. The camera sits on the
+    // +Z side looking -Z — the sky sun (its +Z lean) then lights the camera-facing side.
+    let yaws = [
+        -std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+        std::f32::consts::FRAC_PI_2,
+        0.0,
+    ];
+    for (ri, (model, scale)) in rows.iter().enumerate() {
+        for (ci, yaw) in yaws.iter().enumerate() {
+            let pos = base + Vec3::new(ci as f32 * 3.0 - 4.5, ri as f32 * 2.4 - 5.0, 0.0);
+            let tf = Transform::from_translation(pos)
+                .with_rotation(Quat::from_rotation_y(*yaw))
+                .with_scale(Vec3::splat(*scale));
+            match model {
+                M::Deer { buck } => {
+                    let root = commands
+                        .spawn((
+                            Mesh3d(assets.deer_body.clone()),
+                            MeshMaterial3d(assets.mat.clone()),
+                            tf,
+                            WorldEntity,
+                        ))
+                        .id();
+                    let head = commands
+                        .spawn((
+                            Mesh3d(assets.deer_head[usize::from(*buck)].clone()),
+                            MeshMaterial3d(assets.mat.clone()),
+                            Transform::from_translation(Vec3::from_array(creature_mesh::DEER_NECK)),
+                            WorldEntity,
+                        ))
+                        .id();
+                    commands.entity(root).add_child(head);
+                    // Light stride so the gait silhouette is reviewable.
+                    for (i, hip) in creature_mesh::DEER_HIPS.iter().enumerate() {
+                        let swing = if i == 0 || i == 3 { 0.18 } else { -0.18 };
+                        let leg = commands
+                            .spawn((
+                                Mesh3d(assets.deer_leg.clone()),
+                                MeshMaterial3d(assets.mat.clone()),
+                                Transform::from_translation(Vec3::from_array(*hip))
+                                    .with_rotation(Quat::from_rotation_z(swing)),
+                                WorldEntity,
+                            ))
+                            .id();
+                        commands.entity(root).add_child(leg);
+                    }
+                }
+                M::Bird => {
+                    let root = commands
+                        .spawn((
+                            Mesh3d(assets.bird_body.clone()),
+                            MeshMaterial3d(assets.mat.clone()),
+                            tf,
+                            WorldEntity,
+                        ))
+                        .id();
+                    for side in [-1.0f32, 1.0] {
+                        let wing = commands
+                            .spawn((
+                                Mesh3d(assets.bird_wing.clone()),
+                                MeshMaterial3d(assets.mat.clone()),
+                                Transform::from_translation(Vec3::new(0.02, 0.03, 0.04 * side))
+                                    .with_rotation(
+                                        Quat::from_rotation_y(
+                                            -side * std::f32::consts::FRAC_PI_2,
+                                        ) * Quat::from_rotation_z(side * 0.55),
+                                    ),
+                                WorldEntity,
+                            ))
+                            .id();
+                        commands.entity(root).add_child(wing);
+                    }
+                }
+                M::Fly(v) => {
+                    let root = commands
+                        .spawn((
+                            Mesh3d(assets.fly_body.clone()),
+                            MeshMaterial3d(assets.mat.clone()),
+                            tf,
+                            WorldEntity,
+                        ))
+                        .id();
+                    for side in [-1.0f32, 1.0] {
+                        let wing = commands
+                            .spawn((
+                                Mesh3d(assets.fly_wing[*v].clone()),
+                                MeshMaterial3d(assets.mat.clone()),
+                                Transform::from_translation(Vec3::new(-0.01, 0.005, 0.0))
+                                    .with_rotation(
+                                        Quat::from_rotation_y(
+                                            -side * std::f32::consts::FRAC_PI_2,
+                                        ) * Quat::from_rotation_z(side * 0.45),
+                                    ),
+                                WorldEntity,
+                            ))
+                            .id();
+                        commands.entity(root).add_child(wing);
+                    }
+                }
+            }
+        }
+    }
+
+    // Square-on camera, far enough to hold the whole sheet in a 45° vertical FOV.
+    let centre = base + Vec3::new(0.0, 1.0, 0.0);
+    let eye = centre + Vec3::new(0.0, 0.0, 17.0);
+    for (mut tf, mut fc) in &mut cam {
+        *tf = Transform::from_translation(eye).looking_at(centre, Vec3::Y);
+        let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+        fc.yaw = yaw;
+        fc.pitch = pitch;
+    }
+    info!("modelshot staged at {centre:?}");
+    *done = true;
+}
+
 /// `WED_CREATURELINE=1` — park one deer (buck), one bird and one butterfly in a lit
 /// row at the first meadow site and aim the camera at them (model review, like
 /// WED_LODLINE). They still animate in place via the normal drive systems.
@@ -547,7 +702,7 @@ fn drive_deer(
         d.dip += (want_dip - d.dip) * (dt * 3.0).min(1.0);
         if let Ok(mut htf) = parts.get_mut(d.head) {
             htf.translation = Vec3::from_array(creature_mesh::DEER_NECK);
-            htf.rotation = Quat::from_rotation_z(-1.35 * d.dip);
+            htf.rotation = Quat::from_rotation_z(-1.75 * d.dip);
         }
         // Legs: diagonal-pair walk swing, amplitude with speed.
         let amp = 0.55 * (speed / 4.2).clamp(0.0, 1.0) + 0.25 * (speed > 0.0) as u32 as f32;

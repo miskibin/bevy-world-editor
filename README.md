@@ -48,6 +48,7 @@ mixer, Regenerate.
 | `WED_WEATHER=rain\|snow[,intensity]` | stage weather |
 | `WED_GODRAYS="int,decay,dens,weight,thr,samples"` | god-ray tuning override |
 | `WED_CREATURELINE=1` | park review creatures (deer herd + bird + butterflies) at the first meadow and aim the camera |
+| `WED_MODELSHOT=1` | studio contact sheet: every creature model from 4 sides against the sky, camera framed — pair with `WED_SHOT` for a PNG |
 | `WED_SEED=n` | world seed |
 | `WED_LODLINE=1` | tree LOD review grid instead of the forest |
 | `WED_ATMO="..."` | atmospherics tuning override |
