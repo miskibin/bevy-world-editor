@@ -122,7 +122,8 @@ pub enum MaskChannel {
     Clearing,
     /// Max-combined into the trail-wear field (painted paths).
     PathWear,
-    /// Exported for renderers; does NOT affect worldgen scatter.
+    /// Resolved into `World::grass_density` (per-cell 0..1) for the renderer's grass
+    /// streamer to sample. Does NOT affect worldgen scatter (trees/rocks/props).
     GrassDensity,
 }
 

@@ -96,6 +96,11 @@ pub struct World {
     pub props: Vec<PropInstance>,
     /// Instances added by `Instances` layers (empty for a plain `generate`).
     pub added: Vec<AddedInstance>,
+    /// Per-cell painted GrassDensity weight (0..1), aligned to the height grid. All zeros
+    /// when no GrassDensity mask is painted (⇒ renderers fall back to their moisture-driven
+    /// grass, unchanged). Not consumed by worldgen itself — the renderer's grass streamer
+    /// samples it so the painted channel actually reaches the ground.
+    pub grass_density: Vec<f32>,
 }
 
 /// The expensive, params-only base: landforms + hydraulic + thermal erosion. An editor caches
@@ -204,6 +209,10 @@ pub fn build_world_from_base(
         &height, &slope, &moisture, &ws.surface, &trails, &p.forest, &masks,
     );
 
+    // Painted GrassDensity → a per-cell weight grid the renderer's grass streamer samples.
+    // Zeros when unpainted, so grass falls back to its moisture-driven default.
+    let grass_density = resolve_mask_grid(project, MaskChannel::GrassDensity, height.size);
+
     let mut world = World {
         height,
         slope,
@@ -216,6 +225,7 @@ pub fn build_world_from_base(
         rocks,
         props,
         added: Vec::new(),
+        grass_density,
     };
 
     // 5. Instance overrides, applied after scatter in stack order.
@@ -300,6 +310,26 @@ fn resolve_mask(project: &Project, channel: MaskChannel) -> Option<LayerRaster> 
         })
         .collect();
     Some(LayerRaster::new_f32(raster.w, raster.h, data))
+}
+
+/// Resolve a mask channel into a per-cell weight grid aligned to the `size`×`size` build
+/// grid (all zeros when no such layer exists). Used for channels a renderer samples per
+/// heightfield cell — e.g. GrassDensity, which the grass streamer reads — rather than the
+/// scatter loop sampling at instance positions.
+fn resolve_mask_grid(project: &Project, channel: MaskChannel, size: usize) -> Vec<f32> {
+    match resolve_mask(project, channel) {
+        Some(raster) => {
+            let inv = if size > 1 { 1.0 / (size - 1) as f32 } else { 0.0 };
+            (0..size * size)
+                .map(|i| {
+                    let u = (i % size) as f32 * inv;
+                    let v = (i / size) as f32 * inv;
+                    raster.sample_norm(u, v)
+                })
+                .collect()
+        }
+        None => vec![0.0; size * size],
+    }
 }
 
 #[inline]
@@ -545,6 +575,71 @@ mod tests {
             dense.trees.len(),
             baseline.trees.len()
         );
+    }
+
+    /// A full-opacity ForestDensity mask layer (id 1) — the boost channel under test.
+    fn forest_layer() -> Layer {
+        Layer {
+            id: 1,
+            name: "forest".into(),
+            enabled: true,
+            opacity: 1.0,
+            kind: LayerKind::Mask {
+                channel: MaskChannel::ForestDensity,
+                sidecar: "l1.png".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn flat_forest_boost_paints_trees_and_neutral_is_a_noop() {
+        // The reported bug: on a blank flat map (forest.density == 0) painting forest density
+        // grew nothing, because the mask only MULTIPLIED a zero base. It's now an effective
+        // density, so a boost paints trees onto the bare plane.
+        let p = WorldParams::flat(160);
+        assert_eq!(p.forest.density, 0.0);
+        let size = p.terrain.size;
+        let base = generate_base(&p, &mut noprog());
+
+        // No mask ⇒ bare (the empty-canvas default).
+        let bare = build_world_from_base(&Project::new("bare", p), &base, &mut noprog());
+        assert!(bare.trees.is_empty(), "flat density-0 baseline must be treeless");
+
+        // An all-neutral (byte 128) mask must be a true no-op — identical to no mask.
+        let mut neu = Project::new("neutral", p);
+        neu.layers.push(forest_layer());
+        neu.rasters.insert(1, const_u8(size, 128));
+        let neutral = build_world_from_base(&neu, &base, &mut noprog());
+        assert_eq!(
+            neutral.trees.len(),
+            bare.trees.len(),
+            "a neutral forest mask must not change scatter"
+        );
+
+        // A boosted disk (255 inside, neutral 128 outside) grows trees ONLY inside it.
+        let (cx, cz) = (size as f32 / 2.0, size as f32 / 2.0);
+        let r = size as f32 / 5.0;
+        let mut data = vec![128u8; size * size];
+        for z in 0..size {
+            for x in 0..size {
+                if ((x as f32 - cx).powi(2) + (z as f32 - cz).powi(2)).sqrt() <= r {
+                    data[z * size + x] = 255;
+                }
+            }
+        }
+        let mut proj = Project::new("boost", p);
+        proj.layers.push(forest_layer());
+        proj.rasters.insert(1, LayerRaster::new_u8(size, size, data));
+        let boosted = build_world_from_base(&proj, &base, &mut noprog());
+        assert!(!boosted.trees.is_empty(), "forest boost on a flat map must grow trees");
+
+        // Every tree sits inside the painted disk (a couple cells of tolerance for the
+        // grid/site-jitter offset at the rim).
+        let cell = boosted.height.cell;
+        for t in &boosted.trees {
+            let d = ((t.x / cell - cx).powi(2) + (t.z / cell - cz).powi(2)).sqrt();
+            assert!(d <= r + 3.0, "tree outside the boosted disk at world ({}, {})", t.x, t.z);
+        }
     }
 
     #[test]
