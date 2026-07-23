@@ -31,6 +31,15 @@ fn boots_procedural() -> bool {
         .any(|k| std::env::var(k).is_ok())
 }
 
+/// The visual harnesses (screenshots/clips/profile/edit-demo) were tuned for the full
+/// cinematic post pipeline, so when any is set we keep the old pretty defaults — SSAO,
+/// bloom, god rays, DoF, haze, supersampling — so their output stays comparable. The
+/// interactive editor otherwise boots with all heavy/cosmetic post OFF (fast, responsive
+/// edit-mode viewport; every effect stays available as an opt-in toggle).
+pub fn cinematic_defaults() -> bool {
+    boots_procedural()
+}
+
 impl Default for GenParams {
     fn default() -> Self {
         let mut p = if boots_procedural() {

@@ -106,7 +106,9 @@ pub struct GodRaySettings {
 
 impl Default for GodRaySettings {
     fn default() -> Self {
-        GodRaySettings { enabled: true, strength: 1.0 }
+        // God rays off in the editor by default (opt-in via the Graphics panel); the visual
+        // harnesses keep them on so their output stays comparable.
+        GodRaySettings { enabled: crate::genrun::cinematic_defaults(), strength: 1.0 }
     }
 }
 
@@ -191,7 +193,13 @@ pub(crate) fn godrays_pass(
     uniforms: Res<ComponentUniforms<GodRays>>,
     mut ctx: RenderContext,
 ) {
-    let (view_target, _settings, settings_index) = view.into_inner();
+    let (view_target, settings, settings_index) = view.into_inner();
+    // Skip the whole fullscreen pass when the rays are gated off (disabled, or sun down/out
+    // of frame) — no point ping-ponging the target for a zero contribution. Safe: a skipped
+    // pass makes no `post_process_write` call, so it can't race the ordered chain.
+    if settings.fade <= 0.0 {
+        return;
+    }
     let Some(pipeline) = pipeline_cache.get_render_pipeline(pipeline_res.pipeline_id) else {
         return;
     };

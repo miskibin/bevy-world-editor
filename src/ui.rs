@@ -37,16 +37,21 @@ pub struct GfxSettings {
 
 impl Default for GfxSettings {
     fn default() -> Self {
+        // Edit-mode-first: the interactive editor boots with heavy/cosmetic post OFF for a
+        // fast, responsive viewport — every effect stays one panel toggle away. The visual
+        // harnesses (WED_SHOT/CLIP/PROFILE/EDITDEMO) keep the full cinematic defaults so
+        // their screenshots stay comparable. Mirrors the camera setup in `sky.rs`.
+        let cinematic = crate::genrun::cinematic_defaults();
         GfxSettings {
-            fog: true,
+            fog: cinematic,
             // 1400 m: 3800 was further than the whole map, i.e. no distance fog at all.
             visibility: 1400.0,
-            bloom: 0.12,
+            bloom: if cinematic { 0.12 } else { 0.0 },
             ev100: 11.7,
-            ssao: true,
+            ssao: cinematic,
             relief: 1.6,
             cavity: 1.0,
-            ssaa: 1.35,
+            ssaa: if cinematic { 1.35 } else { 1.0 },
             low: std::env::var("WED_LOWGFX").is_ok(),
         }
     }
@@ -135,11 +140,16 @@ fn panel_ui(
     ground: Res<crate::terrain_mat::GroundMaterial>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut low_applied: Local<bool>,
-    mut cam: Query<(Entity, &mut DistanceFog, &mut Bloom, &mut Exposure), With<Camera3d>>,
+    mut cam: Query<
+        (Entity, &mut DistanceFog, &mut Bloom, &mut Exposure, &mut crate::flycam::FlyCam),
+        With<Camera3d>,
+    >,
     mut commands: Commands,
 ) -> Result {
     let (mut clock, mut rays, mut weather) = mood;
     let (mut ed_state, ed_undo, ed_layers) = editor;
+    // Live fly speed for the status-bar readout (recomputed each frame; scroll adjusts it).
+    let cam_speed = cam.single().ok().map(|(_, _, _, _, fc)| fc.speed);
     let ctx = contexts.ctx_mut()?;
     // egui 0.35 shows panels on a Ui, not the Context — build a screen-covering root Ui in
     // the background layer, then dock panels into it (bevy_egui's documented pattern). No
@@ -262,6 +272,10 @@ fn panel_ui(
                 .and_then(|d| d.smoothed())
                 .unwrap_or(0.0);
             ui.label(format!("{fps:.0} fps"));
+            if let Some(s) = cam_speed {
+                ui.separator();
+                ui.label(format!("cam {s:.0} m/s"));
+            }
 
             if regen.running() {
                 ui.separator();
@@ -397,6 +411,26 @@ fn panel_ui(
                 ui.add(egui::Slider::new(&mut weather.intensity, 0.0..=1.0).text("intensity"));
             });
 
+            egui::CollapsingHeader::new("Camera").default_open(false).show(ui, |ui| {
+                if let Ok((_, _, _, _, mut fc)) = cam.single_mut() {
+                    ui.add(
+                        egui::Slider::new(&mut fc.speed, 2.0..=400.0)
+                            .logarithmic(true)
+                            .text("speed (m/s)"),
+                    )
+                    .on_hover_text("the scroll wheel also adjusts this");
+                    let mut sens = fc.sensitivity * 1000.0;
+                    if ui
+                        .add(egui::Slider::new(&mut sens, 0.5..=6.0).text("mouse sensitivity"))
+                        .changed()
+                    {
+                        fc.sensitivity = sens / 1000.0;
+                    }
+                    ui.checkbox(&mut fc.invert_y, "invert Y");
+                }
+                ui.small("RMB drag look · MMB drag pan · scroll speed · F frame · Shift boost");
+            });
+
             egui::CollapsingHeader::new("Graphics").default_open(false).show(ui, |ui| {
                 let mut changed = false;
                 // Weak-GPU master switch. Applied on toggle AND once at boot (WED_LOWGFX).
@@ -410,18 +444,18 @@ fn panel_ui(
                         mat.extension.params.params2.z = if gfx.low { 0.0 } else { 1.0 };
                     }
                     shadow_map.size = if gfx.low { 1024 } else { 4096 };
-                    gfx.ssao = !gfx.low;
-                    atmo.enabled = !gfx.low;
-                    if let Ok((_, mut dof)) = dof_q.single_mut() {
-                        dof.max_radius = if gfx.low { 0.0 } else { 2.5 };
+                    // Low forces the heavy effects off; leaving Low returns to the current
+                    // (edit-mode = off) baseline rather than forcing cinematic back on.
+                    if gfx.low {
+                        gfx.ssao = false;
+                        atmo.enabled = false;
+                        if let Ok((_, mut dof)) = dof_q.single_mut() {
+                            dof.max_radius = 0.0;
+                        }
                     }
-                    if let Ok((entity, _, _, _)) = cam.single_mut() {
-                        if gfx.low {
-                            commands
-                                .entity(entity)
-                                .remove::<ScreenSpaceAmbientOcclusion>()
-                                .remove::<ContactShadows>();
-                        } else {
+                    if let Ok((entity, ..)) = cam.single_mut() {
+                        // SSAO/contact shadows follow gfx.ssao (Low already forced it off).
+                        if gfx.ssao {
                             commands.entity(entity).insert((
                                 ScreenSpaceAmbientOcclusion {
                                     quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
@@ -429,6 +463,11 @@ fn panel_ui(
                                 },
                                 ContactShadows::default(),
                             ));
+                        } else {
+                            commands
+                                .entity(entity)
+                                .remove::<ScreenSpaceAmbientOcclusion>()
+                                .remove::<ContactShadows>();
                         }
                     }
                 }
@@ -471,7 +510,7 @@ fn panel_ui(
                     ui.add(egui::Slider::new(&mut dof.max_radius, 0.0..=12.0).text("far blur"));
                 }
                 if changed {
-                    if let Ok((entity, mut fog, mut bloom, mut exposure)) = cam.single_mut() {
+                    if let Ok((entity, mut fog, mut bloom, mut exposure, _)) = cam.single_mut() {
                         let vis = if gfx.fog { gfx.visibility } else { 1.0e6 };
                         fog.falloff = FogFalloff::from_visibility_colors(
                             vis,
@@ -501,7 +540,9 @@ fn panel_ui(
             });
 
             ui.separator();
-            ui.small("RMB drag — look · WASD+QE — move · scroll — speed · Shift — boost");
+            ui.small(
+                "RMB drag — look · MMB drag — pan · WASD+QE — move · scroll — speed · F — frame · Shift — boost",
+            );
         });
     });
 
