@@ -5884,6 +5884,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wedcli"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "worldgen",
+]
+
+[[package]]
 name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6498,6 +6506,12 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "worldgen"
 version = "0.1.0"
+dependencies = [
+ "png",
+ "ron",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "writeable"

@@ -15,7 +15,6 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
 
 use crate::genrun::{GeneratedWorld, world_offset};
 use crate::terrain_mesh::{CHUNK, GroundChunkIndex, build_chunk};
@@ -82,6 +81,8 @@ pub struct EditorState {
     pub apply_clicked: bool,
     pub save_clicked: bool,
     pub load_clicked: bool,
+    pub undo_clicked: bool,
+    pub redo_clicked: bool,
     pub file_path: String,
     pub status: String,
 }
@@ -98,6 +99,8 @@ impl Default for EditorState {
             apply_clicked: false,
             save_clicked: false,
             load_clicked: false,
+            undo_clicked: false,
+            redo_clicked: false,
             file_path: "map.nsproj".into(),
             status: String::new(),
         }
@@ -577,13 +580,10 @@ fn cursor_probe(
     windows: Query<&Window>,
     cam: Query<(&Camera, &GlobalTransform), With<crate::flycam::FlyCam>>,
     mut state: ResMut<EditorState>,
-    mut egui: EguiContexts,
+    cap: Res<crate::ui::UiInputCapture>,
 ) {
     state.cursor_hit = None;
-    state.ui_hover = egui
-        .ctx_mut()
-        .map(|c| c.egui_wants_pointer_input() || c.is_pointer_over_egui())
-        .unwrap_or(false);
+    state.ui_hover = cap.pointer;
     if state.tool == Tool::Off || state.ui_hover {
         return;
     }
@@ -818,6 +818,7 @@ fn apply_stroke(
 #[allow(clippy::too_many_arguments)]
 fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<EditorState>,
     mut undo: ResMut<UndoStack>,
     mut layers: ResMut<EditLayers>,
     mut world: Option<ResMut<GeneratedWorld>>,
@@ -825,14 +826,17 @@ fn hotkeys(
     mut meshes: ResMut<Assets<Mesh>>,
     mut overlay: ResMut<OverlayAssets>,
 ) {
+    // Toolbar Undo/Redo buttons set these intents; keyboard adds Ctrl+Z / Ctrl+Y.
+    let btn_undo = std::mem::take(&mut state.undo_clicked);
+    let btn_redo = std::mem::take(&mut state.redo_clicked);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if !ctrl || layers.res == 0 {
-        return;
-    }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let do_undo = keys.just_pressed(KeyCode::KeyZ) && !shift;
-    let do_redo = keys.just_pressed(KeyCode::KeyY) || (keys.just_pressed(KeyCode::KeyZ) && shift);
-    if !do_undo && !do_redo {
+    let key_undo = ctrl && keys.just_pressed(KeyCode::KeyZ) && !shift;
+    let key_redo =
+        ctrl && (keys.just_pressed(KeyCode::KeyY) || (keys.just_pressed(KeyCode::KeyZ) && shift));
+    let do_undo = btn_undo || key_undo;
+    let do_redo = btn_redo || key_redo;
+    if layers.res == 0 || (!do_undo && !do_redo) {
         return;
     }
     let Some(world) = world.as_mut() else { return };

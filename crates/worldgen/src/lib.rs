@@ -56,6 +56,19 @@ impl Default for WorldParams {
     }
 }
 
+impl WorldParams {
+    /// A blank flat-map editor default: a constant-height plane at `size`² with scatter
+    /// switched off (density 0), so the app opens as an empty canvas to sculpt/paint.
+    pub fn flat(size: usize) -> Self {
+        let mut p = WorldParams::default();
+        p.terrain.flat = true;
+        p.terrain.size = (size / 64 * 64).max(64);
+        // Empty canvas: no trees until the user paints density or generates procedurally.
+        p.forest.density = 0.0;
+        p
+    }
+}
+
 /// A hand-placed instance in the finished world. Unlike scattered trees/rocks/props this
 /// carries an opaque mesh id string (`<family>/<kind>/<variant>`) — the renderer resolves it.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,6 +113,12 @@ pub struct BaseFields {
 pub fn generate_base(p: &WorldParams, progress: &mut dyn FnMut(f32, &str)) -> BaseFields {
     progress(0.0, "landforms");
     let mut height = heightfield::generate_base(&p.terrain, |f| progress(f * 0.20, "landforms"));
+    // Flat canvas skips erosion entirely — instant, and flow stays zeroed (no droplet sim).
+    if p.terrain.flat {
+        let flow = vec![0.0; height.h.len()];
+        progress(0.75, "flat");
+        return BaseFields { height, flow };
+    }
     progress(0.20, "hydraulic erosion");
     // Droplet count is authored against the reference 1024² map; scale by actual area so the
     // erosion DENSITY (carving per cell) stays constant across map sizes.
@@ -390,6 +409,23 @@ mod tests {
         assert_eq!((a1.x, a1.z, a1.species), (b1.x, b1.z, b1.species));
         assert_eq!(plain.rocks.len(), staged.rocks.len());
         assert_eq!(plain.props.len(), staged.props.len());
+    }
+
+    #[test]
+    fn flat_mode_is_constant_dry_and_skips_erosion() {
+        // Flat canvas: a constant plane above water, no erosion, zeroed flow, and with the
+        // flat editor default (density 0) no trees until the user paints.
+        let p = WorldParams::flat(128);
+        assert!(p.terrain.flat && p.forest.density == 0.0);
+        let base = generate_base(&p, &mut noprog());
+        assert!(base.flow.iter().all(|&f| f == 0.0), "flat flow must stay zeroed");
+        assert!(
+            base.height.h.iter().all(|&h| (h - p.terrain.flat_height).abs() < 1e-6),
+            "flat base must be a constant plane"
+        );
+        let w = build_world_from_base(&Project::new("flat", p), &base, &mut noprog());
+        assert_eq!(w.lake_count, 0, "a dry flat plane above water has no lakes");
+        assert!(w.trees.is_empty(), "flat default density 0 spawns no trees");
     }
 
     #[test]

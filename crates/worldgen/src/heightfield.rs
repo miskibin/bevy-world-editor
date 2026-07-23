@@ -99,6 +99,12 @@ pub struct TerrainParams {
     pub base_height: f32,
     /// Domain-warp strength (noise-space units; ~0.3–0.8 looks organic).
     pub warp: f32,
+    /// Blank-canvas mode: a constant-height plane at `flat_height`, no noise, no erosion.
+    /// The editor boots into this so the app opens as an empty flat map to sculpt.
+    pub flat: bool,
+    /// Plane height (metres) when `flat` is set — kept comfortably above the default
+    /// water level so a fresh flat map is dry until the user raises water.
+    pub flat_height: f32,
 }
 
 impl Default for TerrainParams {
@@ -113,6 +119,8 @@ impl Default for TerrainParams {
             mountain_height: 170.0,
             base_height: 55.0,
             warp: 0.55,
+            flat: false,
+            flat_height: 12.0,
         }
     }
 }
@@ -121,6 +129,12 @@ impl Default for TerrainParams {
 /// mountain mask. Erosion carves the realism afterwards — this only lays out landforms.
 pub fn generate_base(p: &TerrainParams, mut progress: impl FnMut(f32)) -> HeightField {
     let mut hf = HeightField::new(p.size, p.cell);
+    // Blank canvas: a flat plane, no noise (and the caller skips erosion) — instant.
+    if p.flat {
+        hf.h.fill(p.flat_height);
+        progress(1.0);
+        return hf;
+    }
     let ext = hf.extent();
     // Feature wavelengths in metres (sized for the 1 km reference map), CLAMPED to the
     // actual extent so a small detail-sandbox map still holds a full massif + lowland
