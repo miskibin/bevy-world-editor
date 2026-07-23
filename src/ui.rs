@@ -229,11 +229,22 @@ fn panel_ui(
         ui.horizontal_wrapped(|ui| {
             if let Some(ed) = ed_state.as_deref() {
                 match ed.cursor_hit {
-                    Some(h) => ui.label(format!("cursor {:.0},{:.0}  h={:.1} m", h.x, h.z, h.y)),
+                    Some(h) => ui.label(format!(
+                        "cursor {:.0},{:.0}  h={:.1} m  Δ{:+.1} m",
+                        h.x, h.z, h.y, ed.cursor_delta
+                    )),
                     None => ui.label("cursor —"),
                 };
                 ui.separator();
                 ui.label(format!("{}  r={:.0}", tool_name(ed.tool), ed.radius));
+                if ed.stroking {
+                    let verb = if matches!(ed.tool, crate::editor::Tool::Paint(_)) {
+                        "painting…"
+                    } else {
+                        "sculpting…"
+                    };
+                    ui.colored_label(egui::Color32::from_rgb(120, 210, 250), verb);
+                }
             }
             ui.separator();
             let (u, r) = ed_undo.as_deref().map(|s| s.depth()).unwrap_or((0, 0));
@@ -255,12 +266,19 @@ fn panel_ui(
             if regen.running() {
                 ui.separator();
                 ui.add(egui::ProgressBar::new(regen.fraction()).desired_width(140.0).text(regen.stage()));
-            }
-            if let Some(ed) = ed_state.as_deref() {
-                if !ed.status.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(150, 220, 150), "updating vegetation…");
+            } else if let Some(ed) = ed_state.as_deref() {
+                if ed.auto_apply_in > 0.0 {
                     ui.separator();
-                    ui.label(ed.status.clone());
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 200, 120),
+                        format!("auto-apply in {:.1}s", ed.auto_apply_in),
+                    );
                 }
+            }
+            if let Some(ed) = ed_state.as_deref().filter(|e| !e.status.is_empty()) {
+                ui.separator();
+                ui.label(ed.status.clone());
             }
         });
     });
@@ -272,7 +290,27 @@ fn panel_ui(
                 if let Some(ed) = ed_state.as_deref_mut() {
                     ui.add(egui::Slider::new(&mut ed.radius, 2.0..=80.0).text("radius"));
                     ui.add(egui::Slider::new(&mut ed.strength, 0.1..=4.0).text("strength"));
-                    ui.small("LMB paint · RMB inverse · Ctrl+Z/Y undo");
+                    ui.horizontal(|ui| {
+                        ui.label("falloff");
+                        use crate::editor::BrushFalloff;
+                        for f in BrushFalloff::ALL {
+                            ui.selectable_value(&mut ed.falloff, f, f.label());
+                        }
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut ed.hardness, 0.0..=1.0)
+                            .text("hardness")
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                    .on_hover_text("fraction of the radius held at full strength");
+                    ui.checkbox(&mut ed.auto_apply, "auto-apply (live vegetation)")
+                        .on_hover_text("re-scatter trees/grass/water a beat after each stroke");
+                    egui::CollapsingHeader::new("Shortcuts").default_open(false).show(ui, |ui| {
+                        ui.small("1-5 off/raise/lower/smooth/flatten · 6-9 paint channels");
+                        ui.small("[ ] radius · - = strength · scroll = radius");
+                        ui.small("LMB paint · RMB / Ctrl invert · Shift smooth · Alt pick flatten");
+                        ui.small("Ctrl+Z / Ctrl+Y undo/redo");
+                    });
                 }
             });
 

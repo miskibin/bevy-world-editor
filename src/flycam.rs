@@ -31,6 +31,7 @@ fn fly(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     cap: Res<crate::ui::UiInputCapture>,
+    editor: Option<Res<crate::editor::EditorState>>,
     mut motion: MessageReader<MouseMotion>,
     mut wheel: MessageReader<MouseWheel>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
@@ -41,8 +42,12 @@ fn fly(
 ) {
     let (mut tf, mut fc) = cam.into_inner();
 
-    // Scroll sets speed, unless egui is consuming the pointer (scrolling a panel etc.).
-    if cap.pointer {
+    // Wheel ownership (mirrors editor.rs brush_shortcuts): RMB-hold or no active tool keeps
+    // the wheel on fly speed; otherwise an active brush claims it for its radius.
+    let tool_active =
+        editor.map(|e| e.tool != crate::editor::Tool::Off).unwrap_or(false);
+    let camera_owns_wheel = buttons.pressed(MouseButton::Right) || !tool_active;
+    if cap.pointer || !camera_owns_wheel {
         wheel.clear();
     } else {
         for w in wheel.read() {

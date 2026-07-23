@@ -12,6 +12,7 @@
 //! `GeneratedWorld` change would re-queue every chunk and re-index the whole forest.
 
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::input::mouse::MouseWheel;
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -66,16 +67,72 @@ impl MaskCh {
     }
 }
 
+/// Brush weighting from stroke centre (q = 0) to rim (q = 1). Combined with the inner
+/// `hardness` plateau in `brush_fall`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BrushFalloff {
+    Smooth,
+    Linear,
+    Sharp,
+    Constant,
+}
+
+impl BrushFalloff {
+    pub const ALL: [BrushFalloff; 4] =
+        [BrushFalloff::Smooth, BrushFalloff::Linear, BrushFalloff::Sharp, BrushFalloff::Constant];
+    pub fn label(self) -> &'static str {
+        match self {
+            BrushFalloff::Smooth => "smooth",
+            BrushFalloff::Linear => "linear",
+            BrushFalloff::Sharp => "sharp",
+            BrushFalloff::Constant => "flat",
+        }
+    }
+}
+
+/// Shared brush weight for both sculpt and paint. `q` is the normalised distance from the
+/// stroke centre (0..1, callers pass only q <= 1). `hardness` (0..1) holds the weight at a
+/// full 1.0 out to q == hardness, then the selected curve remaps over (hardness..1].
+fn brush_fall(mode: BrushFalloff, hardness: f32, q: f32) -> f32 {
+    if q <= hardness {
+        return 1.0;
+    }
+    let t = if hardness < 1.0 { (q - hardness) / (1.0 - hardness) } else { 1.0 };
+    match mode {
+        BrushFalloff::Smooth => {
+            let s = 1.0 - t * t;
+            s * s
+        }
+        BrushFalloff::Linear => 1.0 - t,
+        BrushFalloff::Sharp => {
+            let u = 1.0 - t;
+            u * u
+        }
+        BrushFalloff::Constant => 1.0,
+    }
+}
+
 #[derive(Resource)]
 pub struct EditorState {
     pub tool: Tool,
     pub radius: f32,
     pub strength: f32,
+    pub falloff: BrushFalloff,
+    /// Inner plateau (0..1): fraction of the radius that stays at full brush weight.
+    pub hardness: f32,
+    /// Re-fire the Apply path automatically a beat after a stroke ends (live scatter).
+    pub auto_apply: bool,
     /// Terrain point under the cursor this frame (world space), if any.
     pub cursor_hit: Option<Vec3>,
+    /// Height-delta value under the cursor this frame (status read-out).
+    pub cursor_delta: f32,
     /// Set true by the UI when pointer is over an egui panel — strokes must not paint.
     pub ui_hover: bool,
-    /// Height the Flatten tool is pulling toward (sampled at stroke start).
+    /// True while a stroke is being applied (status read-out).
+    pub stroking: bool,
+    /// Seconds left on the auto-apply debounce; <= 0 means nothing pending.
+    pub auto_apply_in: f32,
+    /// Height the Flatten tool is pulling toward (sampled at stroke start, or Alt-picked).
     flatten_target: f32,
     // UI intents (set by the panel, consumed by editor systems).
     pub apply_clicked: bool,
@@ -93,8 +150,14 @@ impl Default for EditorState {
             tool: Tool::Off,
             radius: 12.0,
             strength: 1.0,
+            falloff: BrushFalloff::Smooth,
+            hardness: 0.0,
+            auto_apply: true,
             cursor_hit: None,
+            cursor_delta: 0.0,
             ui_hover: false,
+            stroking: false,
+            auto_apply_in: 0.0,
             flatten_target: 0.0,
             apply_clicked: false,
             save_clicked: false,
@@ -521,7 +584,9 @@ impl Plugin for EditorPlugin {
                 (
                     init_layers,
                     cursor_probe,
+                    brush_shortcuts,
                     apply_stroke,
+                    auto_apply_tick,
                     hotkeys,
                     draw_brush,
                     drive_overlay,
@@ -580,9 +645,11 @@ fn cursor_probe(
     windows: Query<&Window>,
     cam: Query<(&Camera, &GlobalTransform), With<crate::flycam::FlyCam>>,
     mut state: ResMut<EditorState>,
+    layers: Res<EditLayers>,
     cap: Res<crate::ui::UiInputCapture>,
 ) {
     state.cursor_hit = None;
+    state.cursor_delta = 0.0;
     state.ui_hover = cap.pointer;
     if state.tool == Tool::Off || state.ui_hover {
         return;
@@ -616,10 +683,65 @@ fn cursor_probe(
             }
             let hit = (a + b) * 0.5;
             state.cursor_hit = Some(Vec3::new(hit.x, sample(hit), hit.z));
+            if layers.res > 0 {
+                let gx = ((hit.x - off) / hf.cell).round().clamp(0.0, (layers.res - 1) as f32);
+                let gz = ((hit.z - off) / hf.cell).round().clamp(0.0, (layers.res - 1) as f32);
+                state.cursor_delta = layers.height_delta[gz as usize * layers.res + gx as usize];
+            }
             return;
         }
         prev = p;
         prev_above = above;
+    }
+}
+
+/// Keyboard tool/size/strength shortcuts and scroll-to-resize. All gated so they never
+/// fire while a panel field has focus (keyboard) or the pointer is over egui (wheel).
+fn brush_shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut wheel: MessageReader<MouseWheel>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    cap: Res<crate::ui::UiInputCapture>,
+    mut state: ResMut<EditorState>,
+) {
+    if !cap.keyboard {
+        let tool = match () {
+            _ if keys.just_pressed(KeyCode::Digit1) => Some(Tool::Off),
+            _ if keys.just_pressed(KeyCode::Digit2) => Some(Tool::Raise),
+            _ if keys.just_pressed(KeyCode::Digit3) => Some(Tool::Lower),
+            _ if keys.just_pressed(KeyCode::Digit4) => Some(Tool::Smooth),
+            _ if keys.just_pressed(KeyCode::Digit5) => Some(Tool::Flatten),
+            _ if keys.just_pressed(KeyCode::Digit6) => Some(Tool::Paint(MaskCh::ALL[0])),
+            _ if keys.just_pressed(KeyCode::Digit7) => Some(Tool::Paint(MaskCh::ALL[1])),
+            _ if keys.just_pressed(KeyCode::Digit8) => Some(Tool::Paint(MaskCh::ALL[2])),
+            _ if keys.just_pressed(KeyCode::Digit9) => Some(Tool::Paint(MaskCh::ALL[3])),
+            _ => None,
+        };
+        if let Some(t) = tool {
+            state.tool = t;
+        }
+        if keys.just_pressed(KeyCode::BracketLeft) {
+            state.radius = (state.radius / 1.1).clamp(2.0, 80.0);
+        }
+        if keys.just_pressed(KeyCode::BracketRight) {
+            state.radius = (state.radius * 1.1).clamp(2.0, 80.0);
+        }
+        if keys.just_pressed(KeyCode::Minus) {
+            state.strength = (state.strength / 1.1).clamp(0.1, 4.0);
+        }
+        if keys.just_pressed(KeyCode::Equal) {
+            state.strength = (state.strength * 1.1).clamp(0.1, 4.0);
+        }
+    }
+    // Wheel ownership: RMB-hold keeps the fly-cam speed; otherwise an active tool takes the
+    // wheel for brush size. flycam.rs mirrors this test so only one side acts on an event.
+    let rmb = buttons.pressed(MouseButton::Right);
+    if !cap.pointer && state.tool != Tool::Off && !rmb {
+        for w in wheel.read() {
+            state.radius = (state.radius * (1.0 + w.y * 0.1)).clamp(2.0, 80.0);
+        }
+    } else {
+        wheel.clear();
     }
 }
 
@@ -629,6 +751,7 @@ fn cursor_probe(
 fn apply_stroke(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<EditorState>,
     mut layers: ResMut<EditLayers>,
     mut stroke: ResMut<Stroke>,
@@ -640,13 +763,32 @@ fn apply_stroke(
 ) {
     let Some(world) = world.as_mut() else { return };
     if layers.res == 0 || state.tool == Tool::Off {
+        state.stroking = false;
         return;
     }
-    let dt = time.delta_secs();
-    let pressed = buttons.pressed(MouseButton::Left) && !state.ui_hover;
-    // Right-drag paints the "inverse" (lower / erase mask) for fast back-and-forth.
-    let inverse = buttons.pressed(MouseButton::Right) && !state.ui_hover;
-    let painting = pressed || inverse;
+    // Framerate-independent, but cap the per-frame step so a stutter can't spike a stroke.
+    let dt = time.delta_secs().min(0.05);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    let lmb = buttons.pressed(MouseButton::Left) && !state.ui_hover;
+    let rmb = buttons.pressed(MouseButton::Right) && !state.ui_hover;
+    // Ctrl inverts (raise↔lower, paint↔erase); RMB is the same, and the two compose (XOR).
+    let inverse = rmb ^ ctrl;
+    // Shift temporarily smooths — sculpt only, so the stroke stays a Height command.
+    let is_sculpt = !matches!(state.tool, Tool::Paint(_));
+    let tool = if shift && is_sculpt { Tool::Smooth } else { state.tool };
+    // Alt on the Flatten tool samples the target height without laying down a stroke.
+    let alt_pick = alt && matches!(state.tool, Tool::Flatten);
+    if alt_pick {
+        if let (true, Some(hit)) = (lmb, state.cursor_hit) {
+            state.flatten_target = hit.y;
+            state.status = format!("flatten target {:.1} m", hit.y);
+        }
+        state.stroking = false;
+        return;
+    }
+    let painting = lmb || rmb;
 
     if painting && !stroke.active {
         stroke.active = true;
@@ -654,14 +796,20 @@ fn apply_stroke(
         stroke.mask_before.clear();
         stroke.rect = None;
         stroke.dirty_chunks.clear();
+        state.auto_apply_in = 0.0; // a fresh stroke cancels any pending auto-apply
         if let Some(hit) = state.cursor_hit {
             state.flatten_target = hit.y;
         }
     }
+    state.stroking = stroke.active;
 
     if stroke.active && !painting {
         // Stroke ends: fold the first-touch backups into one undo command.
         stroke.active = false;
+        state.stroking = false;
+        if state.auto_apply {
+            state.auto_apply_in = 0.6;
+        }
         if let Some(rect) = stroke.rect {
             let res = layers.res;
             match state.tool {
@@ -728,7 +876,9 @@ fn apply_stroke(
         },
     });
 
-    match state.tool {
+    let falloff = state.falloff;
+    let hardness = state.hardness;
+    match tool {
         Tool::Paint(ch) => {
             let sign: f32 = if inverse { -1.0 } else { 1.0 };
             let grid = &mut layers.masks[ch.idx()];
@@ -738,7 +888,7 @@ fn apply_stroke(
                     if d > r_cells {
                         continue;
                     }
-                    let fall = 1.0 - (d / r_cells).powi(2);
+                    let fall = brush_fall(falloff, hardness, d / r_cells);
                     let i = z * res + x;
                     stroke.mask_before.entry(i).or_insert(grid[i]);
                     let add = sign * state.strength * 500.0 * dt * fall;
@@ -755,16 +905,15 @@ fn apply_stroke(
                     if d > r_cells {
                         continue;
                     }
-                    let fall = {
-                        let q = d / r_cells;
-                        (1.0 - q * q).powi(2) // smooth bump falloff
-                    };
+                    let fall = brush_fall(falloff, hardness, d / r_cells);
                     let i = z * res + x;
                     stroke.height_before.entry(i).or_insert(layers.height_delta[i]);
                     let cur = layers.base_height[i] + layers.height_delta[i];
+                    // Ctrl/RMB flips raise↔lower (Shift-smooth and flatten ignore it).
+                    let inv = if inverse { -1.0 } else { 1.0 };
                     let delta = match tool {
-                        Tool::Raise => amount * fall,
-                        Tool::Lower => -amount * fall,
+                        Tool::Raise => inv * amount * fall,
+                        Tool::Lower => -inv * amount * fall,
                         Tool::Flatten => (state.flatten_target - cur) * (3.0 * dt * fall).min(1.0),
                         Tool::Smooth => {
                             // Pull toward the 4-neighbour average of the DISPLAYED field.
@@ -811,6 +960,34 @@ fn apply_stroke(
                 let _ = meshes.insert(coarse.id(), build_chunk(w0, key.0, key.1, 4));
             }
         }
+    }
+}
+
+/// Live scatter refresh: a debounce after the last stroke ends fires the same Apply path
+/// the toolbar button does, so trees/grass/water re-conform to the sculpted terrain within
+/// ~a second. A single timer means back-to-back strokes never queue a storm of applies.
+fn auto_apply_tick(
+    time: Res<Time>,
+    mut state: ResMut<EditorState>,
+    layers: Res<EditLayers>,
+    stroke: Res<Stroke>,
+    progress: Res<crate::genrun::GenProgress>,
+) {
+    if state.auto_apply_in <= 0.0 || stroke.active {
+        return;
+    }
+    state.auto_apply_in -= time.delta_secs();
+    if state.auto_apply_in > 0.0 {
+        return;
+    }
+    if progress.running {
+        // A generation is still in flight — hold off and retry shortly.
+        state.auto_apply_in = 0.2;
+        return;
+    }
+    state.auto_apply_in = 0.0;
+    if layers.dirty_since_apply {
+        state.apply_clicked = true;
     }
 }
 
@@ -913,10 +1090,14 @@ fn apply_cmd(
     }
 }
 
-/// Brush ring gizmo following the terrain.
+/// Brush ring gizmo following the terrain: an outer ring at `radius`, an inner ring at the
+/// hardness plateau, and (for Flatten) a centre tick at the target height. The ring colour
+/// flips live to signal the invert modifier (Ctrl / RMB) before the user commits a stroke.
 fn draw_brush(
     state: Res<EditorState>,
     world: Option<Res<GeneratedWorld>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     mut gizmos: Gizmos,
 ) {
     let (Some(hit), Some(world)) = (state.cursor_hit, world) else { return };
@@ -925,7 +1106,9 @@ fn draw_brush(
     }
     let hf = &world.0.height;
     let off = world_offset(hf);
-    let col = match state.tool {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let inverting = ctrl ^ buttons.pressed(MouseButton::Right);
+    let base = match state.tool {
         Tool::Lower => Color::srgb(1.0, 0.45, 0.3),
         Tool::Paint(ch) => {
             let t = ch.tint();
@@ -933,18 +1116,33 @@ fn draw_brush(
         }
         _ => Color::srgb(0.3, 0.9, 1.0),
     };
-    let n = 48;
-    let mut prev: Option<Vec3> = None;
-    for k in 0..=n {
-        let a = k as f32 / n as f32 * std::f32::consts::TAU;
-        let x = hit.x + a.cos() * state.radius;
-        let z = hit.z + a.sin() * state.radius;
-        let y = hf.sample_world(x - off, z - off) + 0.25;
-        let p = Vec3::new(x, y, z);
-        if let Some(q) = prev {
-            gizmos.line(q, p, col);
+    // Invert flips the ring to a warning orange so the mode reads before clicking.
+    let col = if inverting { Color::srgb(1.0, 0.5, 0.15) } else { base };
+    let draped_ring = |gizmos: &mut Gizmos, radius: f32, col: Color| {
+        let n = 48;
+        let mut prev: Option<Vec3> = None;
+        for k in 0..=n {
+            let a = k as f32 / n as f32 * std::f32::consts::TAU;
+            let x = hit.x + a.cos() * radius;
+            let z = hit.z + a.sin() * radius;
+            let y = hf.sample_world(x - off, z - off) + 0.25;
+            let p = Vec3::new(x, y, z);
+            if let Some(q) = prev {
+                gizmos.line(q, p, col);
+            }
+            prev = Some(p);
         }
-        prev = Some(p);
+    };
+    draped_ring(&mut gizmos, state.radius, col);
+    if state.hardness > 0.05 {
+        let inner = col.with_alpha(0.5);
+        draped_ring(&mut gizmos, state.radius * state.hardness, inner);
+    }
+    // Flatten: a short vertical tick from the ground up to the target height at the centre.
+    if state.tool == Tool::Flatten {
+        let base_pt = Vec3::new(hit.x, hit.y, hit.z);
+        let tip = Vec3::new(hit.x, state.flatten_target + 0.25, hit.z);
+        gizmos.line(base_pt, tip, Color::srgb(1.0, 0.95, 0.4));
     }
 }
 
