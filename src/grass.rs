@@ -176,6 +176,9 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
             }
             let i = (mz as usize) * size + mx as usize;
             let moist = w.moisture[i];
+            // Painted GrassDensity boost (0 where unpainted / no mask): lets the brush grow
+            // grass where the moisture-driven default wouldn't, and thicken it where it would.
+            let boost = w.grass_density.get(i).copied().unwrap_or(0.0);
             // Meadow patches (matches the terrain shader's macro sward variation): tall,
             // dense, flower-speckled swards vs ordinary short turf.
             let meadow = worldgen::noise::fbm(wx / 135.0, wz / 135.0, 2, 777);
@@ -184,25 +187,28 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
                 || w.slope[i] > 0.55
                 || w.trails[i] > 0.35
                 || hf.h[i] < crate::genrun::WATER_LEVEL + 0.6
-                || moist < 0.12
+                || (moist < 0.12 && boost < 0.05)
             {
                 continue;
             }
             // Stocking rises with moisture; trails and dry ridges stay sparse. Open
             // meadows read bald below ~0.5 — a lawn is thousands of tufts, not dozens.
-            if !rng.chance((0.5 + moist * 0.45) * (0.75 + 0.45 * meadowness)) {
+            // Painted density adds on top and pushes toward a full lawn where brushed in.
+            let stock = ((0.5 + moist * 0.45) * (0.75 + 0.45 * meadowness) + boost * 1.4).min(1.0);
+            if !rng.chance(stock) {
                 continue;
             }
             let base = Vec3::new(wx, hf.sample_world(mx, mz) - 0.02, wz);
-            // Colour: dry straw → lush green by moisture, slight per-tuft jitter.
-            let lush = (moist * 1.3).min(1.0);
+            // Colour: dry straw → lush green by moisture (painted grass reads deliberately
+            // lush), slight per-tuft jitter.
+            let lush = (moist * 1.3 + boost * 0.6).min(1.0);
             let jitter = 0.85 + rng.f32() * 0.3;
             let col = [
                 (0.32 - 0.20 * lush) * jitter,
                 (0.34 + 0.08 * lush) * jitter,
                 (0.10 + 0.02 * lush) * jitter,
             ];
-            let scale = 1.0 + meadowness * 0.9; // meadow grass stands taller
+            let scale = 1.0 + meadowness * 0.9 + boost * 0.5; // meadow + painted grass stand taller
             tuft(&mut positions, &mut normals, &mut colors, &mut rng, base, col, scale);
             // Wildflowers: only in meadows, sparse enough to read as speckles.
             if meadowness > 0.35 && rng.chance(0.06 * meadowness) {

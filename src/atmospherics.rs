@@ -118,7 +118,9 @@ pub struct AtmoSettings {
 
 impl Default for AtmoSettings {
     fn default() -> Self {
-        AtmoSettings { enabled: true, strength: 1.0 }
+        // Cinematic haze off in the editor by default (opt-in via the Graphics panel); the
+        // visual harnesses keep it on so their output stays comparable.
+        AtmoSettings { enabled: crate::genrun::cinematic_defaults(), strength: 1.0 }
     }
 }
 
@@ -189,7 +191,13 @@ pub(crate) fn atmospherics_pass(
     uniforms: Res<ComponentUniforms<Atmospherics>>,
     mut ctx: RenderContext,
 ) {
-    let (view_target, prepass, _settings, settings_index) = view.into_inner();
+    let (view_target, prepass, settings, settings_index) = view.into_inner();
+    // Skip the whole fullscreen pass when the haze is gated off (0 = off) — no point
+    // ping-ponging the target for nothing. Safe: a skipped pass makes no `post_process_write`
+    // call, so it can't race the ordered chain (same as the ViewQuery component skip).
+    if settings.fade <= 0.0 {
+        return;
+    }
     let Some(pipeline) = pipeline_cache.get_render_pipeline(pipeline_res.pipeline_id) else {
         return;
     };

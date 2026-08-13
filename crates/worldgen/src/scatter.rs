@@ -12,11 +12,17 @@ use crate::tree::Species;
 /// here), sampled at the instance's normalised world position.
 #[derive(Default, Clone, Copy)]
 pub struct ScatterMasks<'a> {
-    /// Tree stocking multiplier, neutral at 0.5. See `scatter_masked`.
+    /// Tree stocking density control, neutral at [`FOREST_NEUTRAL`]. See `scatter_masked`.
     pub forest_density: Option<&'a LayerRaster>,
     /// Hard exclusion where `w > 0.5` — suppresses trees, rocks AND props.
     pub clearing: Option<&'a LayerRaster>,
 }
+
+/// The ForestDensity neutral weight. The editor paints this channel signed around a
+/// mid-grey neutral of byte 128, so the resolved weight sits at `128/255` (NOT 0.5). Using
+/// the exact byte-derived value as the pivot makes an all-neutral painted mask a true
+/// no-op — bit-identical to having no mask at all, on ANY base density (including 0).
+pub const FOREST_NEUTRAL: f32 = 128.0 / 255.0;
 
 impl ScatterMasks<'_> {
     /// Clearing weight at world metres (0 when no clearing mask). `ext` = map extent (m).
@@ -24,10 +30,11 @@ impl ScatterMasks<'_> {
     fn clearing_w(&self, wx: f32, wz: f32, ext: f32) -> f32 {
         self.clearing.map_or(0.0, |m| m.sample_norm(wx / ext, wz / ext))
     }
-    /// ForestDensity weight at world metres, neutral 0.5 when no mask (⇒ multiplier 1.0).
+    /// ForestDensity weight at world metres, neutral [`FOREST_NEUTRAL`] when no mask
+    /// (⇒ effective density == `p.density`, the no-op).
     #[inline]
     fn forest_w(&self, wx: f32, wz: f32, ext: f32) -> f32 {
-        self.forest_density.map_or(0.5, |m| m.sample_norm(wx / ext, wz / ext))
+        self.forest_density.map_or(FOREST_NEUTRAL, |m| m.sample_norm(wx / ext, wz / ext))
     }
 }
 
@@ -316,12 +323,15 @@ pub fn scatter(
 
 /// Mask-aware tree scatter.
 ///
-/// - `ForestDensity` (neutral 0.5) multiplies spawn probability: `w>=0.5 ⇒ ×(1+(w-0.5)·2)`
-///   (up to 2×), `w<0.5 ⇒ ×(w·2)` (down to 0). Trees only.
+/// - `ForestDensity` (neutral [`FOREST_NEUTRAL`]) sets an EFFECTIVE stocking density that
+///   drives both the meadow-clearing gate and the per-site stocking. Neutral leaves
+///   `p.density` untouched; painted up interpolates the density toward a closed canopy
+///   (1.0) — so a boost raises trees even where `p.density` is 0 (a blank flat map);
+///   painted down scales it toward bare. Trees only.
 /// - `Clearing` (`w>0.5`) hard-excludes the site.
 ///
 /// With both masks `None` the result is bit-for-bit identical to the pure scatter (the
-/// density multiplier is exactly 1.0 at the neutral 0.5, and no early-out fires).
+/// effective density equals `p.density` at the neutral pivot, and no early-out fires).
 pub fn scatter_masked(
     hf: &HeightField,
     slope: &[f32],
@@ -372,18 +382,26 @@ pub fn scatter_masked(
             if alt_ok <= 0.0 {
                 continue;
             }
+            // ForestDensity mask → an EFFECTIVE stocking density. At the neutral pivot this
+            // is exactly `p.density` (so the no-mask path stays bit-identical); painted up
+            // interpolates the density toward a closed canopy (1.0), which lets a boost grow
+            // trees even where `p.density` is 0; painted down scales it toward bare. This
+            // drives BOTH the meadow-clearing gate and the per-site stocking below.
+            let fw = masks.forest_w(wx, wz, ext);
+            let density = if fw >= FOREST_NEUTRAL {
+                let t = (fw - FOREST_NEUTRAL) / (1.0 - FOREST_NEUTRAL); // 0..1 above neutral
+                p.density + t * (1.0 - p.density)
+            } else {
+                p.density * (fw / FOREST_NEUTRAL) // 0..p.density below neutral
+            };
             // Meadow clearings from low-frequency noise, opened wider at low density.
             let clearing =
                 fbm(wx * clearing_freq, wz * clearing_freq, 3, p.seed.wrapping_add(555));
-            if clearing < 0.40 - 0.25 * p.density {
+            if clearing < 0.40 - 0.25 * density {
                 continue;
             }
             // Stocking: denser on moist, gentler ground.
-            let mut stock = p.density * alt_ok * (0.45 + 0.55 * m) * (1.0 - (s / p.max_slope) * 0.5);
-            // ForestDensity mask: neutral 0.5 ⇒ ×1.0 (no-op, keeps the no-mask path exact);
-            // painted up ⇒ up to 2× stocking, painted down ⇒ toward a bare clearing.
-            let fw = masks.forest_w(wx, wz, ext);
-            stock *= if fw >= 0.5 { 1.0 + (fw - 0.5) * 2.0 } else { fw * 2.0 };
+            let stock = density * alt_ok * (0.45 + 0.55 * m) * (1.0 - (s / p.max_slope) * 0.5);
             if !rng.chance(stock) {
                 continue;
             }

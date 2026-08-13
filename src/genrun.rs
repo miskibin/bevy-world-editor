@@ -23,9 +23,31 @@ pub struct WorldEntity;
 #[derive(Resource, Clone)]
 pub struct GenParams(pub worldgen::WorldParams);
 
+/// The editor opens on a blank flat map. The screenshot / profile / edit-demo harnesses
+/// still expect the procedural forest at boot, so those keep the full procedural default.
+fn boots_procedural() -> bool {
+    ["WED_SHOT", "WED_CLIP", "WED_PROFILE", "WED_EDITDEMO", "WED_PROCGEN"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok())
+}
+
+/// The visual harnesses (screenshots/clips/profile/edit-demo) were tuned for the full
+/// cinematic post pipeline, so when any is set we keep the old pretty defaults — SSAO,
+/// bloom, god rays, DoF, haze, supersampling — so their output stays comparable. The
+/// interactive editor otherwise boots with all heavy/cosmetic post OFF (fast, responsive
+/// edit-mode viewport; every effect stays available as an opt-in toggle).
+pub fn cinematic_defaults() -> bool {
+    boots_procedural()
+}
+
 impl Default for GenParams {
     fn default() -> Self {
-        let mut p = worldgen::WorldParams::default();
+        let mut p = if boots_procedural() {
+            worldgen::WorldParams::default()
+        } else {
+            // Blank flat editor canvas: 512 m plane, scatter off, near-instant regen.
+            worldgen::WorldParams::flat(512)
+        };
         p.forest.water_level = WATER_LEVEL;
         if let Ok(seed) = std::env::var("WED_SEED") {
             if let Ok(s) = seed.trim().parse::<u32>() {

@@ -58,7 +58,11 @@ pub fn default_dof() -> Dof {
     // 2026-07-08 (user: blur too strong — supersedes the earlier range-60/ramp-130/radius-9 pass):
     // range 42→64 widens the fully-sharp band so blur starts much farther from the hero, far_ramp
     // 130→200 melts distance in later + gentler, max_radius 13→8 softens the far bokeh to a whisper.
-    Dof { focal: 60.0, range: 200.0, far_ramp: 900.0, max_radius: 2.5, near: NEAR, debug_view: 0.0 }
+    // Edit-mode default: far blur OFF (max_radius 0) for a crisp, responsive viewport; the
+    // cinematic harnesses keep the gentle 2.5 px soften. The Graphics panel's "far blur"
+    // slider re-enables it live.
+    let max_radius = if crate::genrun::cinematic_defaults() { 2.5 } else { 0.0 };
+    Dof { focal: 60.0, range: 200.0, far_ramp: 900.0, max_radius, near: NEAR, debug_view: 0.0 }
 }
 
 pub struct DofPlugin;
@@ -105,7 +109,13 @@ pub(crate) fn dof_pass(
     uniforms: Res<ComponentUniforms<Dof>>,
     mut ctx: RenderContext,
 ) {
-    let (view_target, prepass, _settings, settings_index) = view.into_inner();
+    let (view_target, prepass, settings, settings_index) = view.into_inner();
+    // Skip the whole fullscreen pass when there's no blur (max_radius 0 = off) — no point
+    // ping-ponging the target for a no-op. Safe: a skipped pass makes no `post_process_write`
+    // call, so it can't race the ordered chain (same as the Low-preset ViewQuery skip).
+    if settings.max_radius <= 0.0 {
+        return;
+    }
     let Some(pipeline) = pipeline_cache.get_render_pipeline(pipeline_res.pipeline_id) else {
         return;
     };

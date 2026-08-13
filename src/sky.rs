@@ -76,6 +76,13 @@ fn setup_camera(
     });
     let (yaw, pitch, _) = cam_tf.rotation.to_euler(EulerRot::YXZ);
 
+    // Edit-mode-first defaults: the interactive editor boots with heavy/cosmetic post OFF
+    // for a fast, responsive viewport (all still opt-in via the Graphics panel). The visual
+    // harnesses keep the full cinematic pipeline so their output stays comparable.
+    let cinematic = crate::genrun::cinematic_defaults();
+    let bloom_intensity = if cinematic { 0.12 } else { 0.0 };
+    let fog_visibility = if cinematic { 1400.0 } else { 1.0e6 };
+
     let cam_id = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
@@ -90,13 +97,12 @@ fn setup_camera(
         Tonemapping::TonyMcMapface, // neutral filmic — realism, not a stylized grade
         Msaa::Off,
         Smaa { preset: SmaaPreset::Ultra },
-        ScreenSpaceAmbientOcclusion {
-            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-            ..default()
-        },
-        (DepthPrepass, NormalPrepass, ContactShadows::default()),
-        Bloom { intensity: 0.12, ..Bloom::NATURAL },
-        // Gentle atmospheric fog — aerial perspective over the 2 km map, not a wall.
+        (DepthPrepass, NormalPrepass),
+        // Kept on the camera (intensity 0 off-cinematic) so the Graphics panel's fog/bloom
+        // query always resolves; the slider re-enables it live.
+        Bloom { intensity: bloom_intensity, ..Bloom::NATURAL },
+        // Gentle atmospheric fog — aerial perspective over the 2 km map, not a wall. Pushed
+        // effectively off (visibility 1e6) in edit mode; the fog toggle brings it back.
         DistanceFog {
             // Warm cream haze (Warbell lesson: pale-blue fog reads as milky white-out;
             // warm reads as sunlit atmosphere). Atmospherics inherits this colour live.
@@ -104,7 +110,7 @@ fn setup_camera(
             directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.6),
             directional_light_exponent: 30.0,
             falloff: FogFalloff::from_visibility_colors(
-                1400.0,
+                fog_visibility,
                 Color::srgb(0.42, 0.48, 0.55),
                 Color::srgb(0.68, 0.76, 0.88),
             ),
@@ -123,6 +129,18 @@ fn setup_camera(
             crate::godrays::default_godrays(),
         ),
     )).id();
+
+    // Heavy screen-space effects: only on for the cinematic harness path. In edit mode they
+    // stay off (the SSAO checkbox in the Graphics panel adds them back on demand).
+    if cinematic {
+        commands.entity(cam_id).insert((
+            ScreenSpaceAmbientOcclusion {
+                quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                ..default()
+            },
+            ContactShadows::default(),
+        ));
+    }
 
     // `WED_OCCLUSION=1`: two-phase hi-Z occlusion culling (0.19 ships it; needs the depth
     // prepass we always have). Off by default until measured a win — a forest is a poor
