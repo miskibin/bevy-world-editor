@@ -11,6 +11,7 @@
 //! editor can cache it and re-run only the cheap downstream steps ([`build_world_from_base`])
 //! when the user tweaks a layer that doesn't touch the base terrain.
 
+pub mod biome;
 pub mod creatures;
 pub mod erosion;
 pub mod heightfield;
@@ -20,14 +21,17 @@ pub mod noise;
 pub mod path;
 pub mod export;
 pub mod project;
+pub mod river;
 pub mod rng;
 pub mod scatter;
 pub mod trails;
 pub mod tree;
 
+pub use biome::{Biome, TerrainStyle};
 pub use creatures::{creature_sites, CreatureSite, SiteKind};
 pub use erosion::ErosionParams;
 pub use heightfield::{HeightField, TerrainParams};
+pub use river::{River, RiverParams};
 pub use path::{find_path, PathGrid};
 pub use project::{
     InstanceAdd, InstanceRemove, Layer, LayerData, LayerKind, LayerRaster, MaskChannel, Project,
@@ -41,6 +45,9 @@ pub use tree::{Species, TreeSkeleton, ALL_SPECIES};
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct WorldParams {
+    /// Which world this is. Absent from pre-biome project files ⇒ `Temperate`, which
+    /// reproduces those files' original output exactly.
+    pub biome: Biome,
     pub terrain: TerrainParams,
     pub erosion: ErosionParams,
     pub forest: ForestParams,
@@ -49,10 +56,33 @@ pub struct WorldParams {
 impl Default for WorldParams {
     fn default() -> Self {
         WorldParams {
+            biome: Biome::default(),
             terrain: TerrainParams::default(),
             erosion: ErosionParams::default(),
             forest: ForestParams::default(),
         }
+    }
+}
+
+impl WorldParams {
+    /// Params for a fresh map of the given biome: the biome's own landform/vegetation
+    /// defaults rather than the temperate ones with a different label.
+    pub fn for_biome(biome: Biome) -> Self {
+        let mut p = WorldParams { biome, ..Default::default() };
+        if biome == Biome::Arid {
+            // 512 m: a compact RTS map. Detail per square metre goes up while the total
+            // entity count goes down — the trade the whole arid preset is tuned around.
+            p.terrain.size = 512;
+            p.terrain.mountainousness = 0.62; // taller mesas, not more of them
+            p.terrain.mountain_height = 96.0;
+            p.terrain.base_height = 26.0;
+            p.forest.treeline = 120.0;
+            // Desert trees stand apart; closed canopy would be the wrong read even in
+            // the oasis, and the wide pitch is a large share of the perf budget.
+            p.forest.spacing = 7.6;
+            p.forest.water_level = 1.0;
+        }
+        p
     }
 }
 
@@ -69,6 +99,10 @@ pub struct AddedInstance {
 }
 
 pub struct World {
+    /// Which biome generated this world. Carried on the output (not just the params) so
+    /// every consumer — renderer, exporter, editor — reads its splat/species meaning from
+    /// the world it was handed instead of a parameter block it may not have.
+    pub biome: Biome,
     pub height: HeightField,
     pub slope: Vec<f32>,
     pub moisture: Vec<f32>,
@@ -93,25 +127,43 @@ pub struct BaseFields {
     /// Water-passage map from the droplet sim (drives moisture; not re-derivable cheaply,
     /// so it rides the cached base rather than being "recomputed" downstream).
     pub flow: Vec<f32>,
+    /// Carved river surface (`NEG_INFINITY` where dry), empty for biomes without a river.
+    /// Lives on the base because carving edits the *height*, which the cache owns.
+    pub river: Vec<f32>,
+    /// River centreline in world metres, head → mouth. Empty when there is no river.
+    pub river_course: Vec<(f32, f32)>,
 }
 
 /// Landforms + erosion — the cacheable base stage. Progress spans 0.0..0.75 (the same
 /// fractions the original `generate` used, so callers see identical progress reporting).
 pub fn generate_base(p: &WorldParams, progress: &mut dyn FnMut(f32, &str)) -> BaseFields {
     progress(0.0, "landforms");
-    let mut height = heightfield::generate_base(&p.terrain, |f| progress(f * 0.20, "landforms"));
+    let mut height = heightfield::generate_base(&p.terrain, p.biome.terrain_style(), |f| {
+        progress(f * 0.20, "landforms")
+    });
     progress(0.20, "hydraulic erosion");
     // Droplet count is authored against the reference 1024² map; scale by actual area so the
-    // erosion DENSITY (carving per cell) stays constant across map sizes.
+    // erosion DENSITY (carving per cell) stays constant across map sizes. The biome scale on
+    // top of that protects landforms that erosion would destroy — see `Biome::erosion_scale`.
     let mut ep = p.erosion;
     let area_ratio = (p.terrain.size as f32 / 1024.0).powi(2);
-    ep.droplets = ((ep.droplets as f32 * area_ratio) as u32).max(2_000);
+    ep.droplets =
+        ((ep.droplets as f32 * area_ratio * p.biome.erosion_scale()) as u32).max(2_000);
     let flow = erosion::erode(&mut height, &ep, p.terrain.seed, |f| {
         progress(0.20 + f * 0.50, "hydraulic erosion")
     });
     progress(0.70, "thermal erosion");
     erosion::thermal(&mut height, &p.erosion, |f| progress(0.70 + f * 0.05, "thermal erosion"));
-    BaseFields { height, flow }
+    // The river is carved into the BASE because it edits height, and the base cache owns
+    // height. Editing a mask layer must not re-run the trace.
+    let (river, river_course) = if p.biome.has_river() {
+        progress(0.75, "river");
+        let r = river::carve(&mut height, &flow, &RiverParams::default(), p.terrain.seed);
+        (r.water, r.course)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    BaseFields { height, flow, river, river_course }
 }
 
 /// Build a world from a project. Runs [`generate_base`] then [`build_world_from_base`].
@@ -150,10 +202,26 @@ pub fn build_world_from_base(
     // 2. Recomputed maps (lakes/slope/moisture). Flow rides the cached base — the droplet
     //    sim can't be cheaply re-run, and moisture uses it as an approximation.
     progress(0.75, "lakes");
-    let ws = lakes::detect_lakes(&height, p.forest.water_level, 0.8, 120);
+    let mut ws = lakes::detect_lakes(&height, p.forest.water_level, 0.8, 120);
+    // Merge the carved river into the lake surface. Same `NEG_INFINITY == dry` convention,
+    // so elementwise max is the union — and where a river runs through a basin the higher
+    // (lake) surface wins, which is what a reservoir looks like.
+    if !base.river.is_empty() {
+        for (w, r) in ws.surface.iter_mut().zip(&base.river) {
+            if *r > *w {
+                *w = *r;
+            }
+        }
+    }
     progress(0.80, "derived maps");
     let slope = maps::slope_map(&height);
-    let moisture = maps::moisture_map(&height, &base.flow, &ws.surface, p.forest.water_level);
+    let moisture = maps::moisture_map(
+        &height,
+        &base.flow,
+        &ws.surface,
+        p.forest.water_level,
+        p.biome.moisture_band(),
+    );
 
     // 3. Trails, then max-combine painted PathWear masks so hand-painted paths repel scatter.
     progress(0.84, "trails");
@@ -178,14 +246,18 @@ pub fn build_world_from_base(
         forest_density: forest_density.as_ref(),
         clearing: clearing.as_ref(),
     };
-    let trees =
-        scatter::scatter_masked(&height, &slope, &moisture, &ws.surface, &trails, &p.forest, &masks);
-    let rocks = scatter::scatter_rocks_masked(&height, &slope, &ws.surface, p.terrain.seed, &masks);
+    let trees = scatter::scatter_masked(
+        &height, &slope, &moisture, &ws.surface, &trails, &p.forest, p.biome, &masks,
+    );
+    let rocks = scatter::scatter_rocks_masked(
+        &height, &slope, &ws.surface, p.terrain.seed, p.biome, &masks,
+    );
     let props = scatter::scatter_props_masked(
-        &height, &slope, &moisture, &ws.surface, &trails, &p.forest, &masks,
+        &height, &slope, &moisture, &ws.surface, &trails, &p.forest, p.biome, &masks,
     );
 
     let mut world = World {
+        biome: p.biome,
         height,
         slope,
         moisture,
@@ -334,6 +406,7 @@ mod tests {
             terrain: TerrainParams { size: 192, ..Default::default() },
             erosion: ErosionParams { droplets: 5000, ..Default::default() },
             forest: ForestParams::default(),
+            ..Default::default()
         };
         let mut last = -1.0f32;
         let w = generate(&p, |f, _| {
@@ -347,6 +420,65 @@ mod tests {
         assert!(w.added.is_empty(), "plain generate must add no instances");
     }
 
+    /// End-to-end arid map: the river must exist and be wet, the vegetation must be
+    /// riparian (palms on the water, dead wood away from it), and the ground cover must be
+    /// the desert set. This is the one test that would catch the biome seam being wired up
+    /// in worldgen but never reaching the world that comes out.
+    #[test]
+    fn arid_map_is_a_desert_with_a_green_river() {
+        let mut p = WorldParams::for_biome(Biome::Arid);
+        p.terrain.size = 256; // keep the test quick; the layout is scale-independent
+        let w = generate(&p, |_, _| {});
+        assert_eq!(w.biome, Biome::Arid);
+
+        let wet = w.water.iter().filter(|v| v.is_finite()).count();
+        assert!(wet > 400, "no river on an arid map ({wet} wet cells)");
+
+        assert!(!w.trees.is_empty(), "nothing grew at all");
+        for t in &w.trees {
+            assert!(
+                Biome::Arid.species().contains(&t.species),
+                "temperate species {:?} on an arid map",
+                t.species
+            );
+        }
+        // Palms must sit closer to water than dead wood does, on average — the single
+        // measurable statement of "the oasis is a ribbon along the river".
+        let mean_moisture = |sp: Species| {
+            let (mut acc, mut n) = (0.0f64, 0usize);
+            for t in w.trees.iter().filter(|t| t.species == sp) {
+                let i = ((t.z / w.height.cell) as usize).min(w.height.size - 1) * w.height.size
+                    + ((t.x / w.height.cell) as usize).min(w.height.size - 1);
+                acc += w.moisture[i] as f64;
+                n += 1;
+            }
+            (n > 0).then(|| acc / n as f64)
+        };
+        let palm = mean_moisture(Species::DatePalm).expect("no palms grew");
+        if let Some(dead) = mean_moisture(Species::DeadTree) {
+            assert!(palm > dead, "palms ({palm:.2}) not wetter than dead wood ({dead:.2})");
+        }
+
+        // Ground cover is the desert set, not forest bushes and mushrooms.
+        for pr in &w.props {
+            assert!(
+                pr.kind == scatter::PROP_SCRUB || pr.kind == scatter::PROP_TUSSOCK,
+                "forest prop {} on an arid map",
+                pr.kind
+            );
+        }
+    }
+
+    /// The biome seam must not disturb existing maps: a project written before biomes
+    /// existed has no `biome` field, so it must load as temperate and generate exactly what
+    /// it always did.
+    #[test]
+    fn missing_biome_field_loads_as_temperate() {
+        let params: WorldParams = ron::from_str("(terrain: (size: 128))").expect("parse");
+        assert_eq!(params.biome, Biome::Temperate);
+        assert_eq!(params.terrain.size, 128);
+    }
+
     // --- Staged / project pipeline -------------------------------------------------------
 
     fn test_params() -> WorldParams {
@@ -356,6 +488,7 @@ mod tests {
             terrain: TerrainParams { size: 160, ..Default::default() },
             erosion: ErosionParams { droplets: 6000, ..Default::default() },
             forest: ForestParams::default(),
+            ..Default::default()
         }
     }
 

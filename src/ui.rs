@@ -168,6 +168,22 @@ fn panel_ui(
             .show(ui, |ui| {
             egui::CollapsingHeader::new("Terrain").default_open(true).show(ui, |ui| {
                 let p = &mut params.0;
+                // Biome first: it re-points the ground textures, the species table and the
+                // landform generator, so every slider below it means something different
+                // per biome. Switching loads that biome's whole preset rather than keeping
+                // temperate numbers under a desert label — a 215 m treeline and 55 m of
+                // rolling relief make an "arid" map that is just a recoloured forest.
+                ui.horizontal(|ui| {
+                    ui.label("biome");
+                    for b in worldgen::Biome::ALL {
+                        if ui.selectable_label(p.biome == b, b.label()).clicked() && p.biome != b {
+                            let seed = p.terrain.seed;
+                            *p = worldgen::WorldParams::for_biome(b);
+                            p.terrain.seed = seed;
+                            p.forest.seed = seed;
+                        }
+                    }
+                });
                 let mut sz = p.terrain.size as u32;
                 if ui
                     .add(egui::Slider::new(&mut sz, 256..=4096).step_by(64.0).text("map size (m)"))
@@ -193,12 +209,15 @@ fn panel_ui(
                 }
             });
 
-            egui::CollapsingHeader::new("Forest").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Vegetation").default_open(true).show(ui, |ui| {
                 let p = &mut params.0;
                 ui.add(egui::Slider::new(&mut p.forest.density, 0.0..=1.0).text("density"));
-                for (i, name) in ["pine", "spruce", "broadleaf", "birch"].iter().enumerate() {
+                // The four weight sliders address atlas SLOTS, so they have to be labelled
+                // with the current biome's species or you are tuning "pine" on a desert.
+                for (i, sp) in p.biome.species().into_iter().enumerate() {
+                    let name = format!("{sp:?}").to_lowercase();
                     ui.add(
-                        egui::Slider::new(&mut p.forest.species_weights[i], 0.0..=2.0).text(*name),
+                        egui::Slider::new(&mut p.forest.species_weights[i], 0.0..=2.0).text(name),
                     );
                 }
                 ui.add(egui::Slider::new(&mut p.forest.treeline, 100.0..=300.0).text("treeline"));

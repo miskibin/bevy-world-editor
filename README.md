@@ -1,10 +1,36 @@
-# Bevy World Editor — Forest Generator
+# Bevy World Editor
 
-A realistic procedural forest world generator built on **Bevy 0.19**. Phase 1: generator +
-fly-cam — a ~1×1 km world is generated in seconds (async, with a progress bar) and you fly
-through it; tweak parameters in the panel and hit **Regenerate**.
+A realistic procedural world generator built on **Bevy 0.19**. A world is generated in
+seconds (async, with a progress bar) and you fly — or play — through it; tweak parameters
+in the panel and hit **Regenerate**.
 
 ![forest interior](docs/media/forest.png)
+
+## Biomes
+
+A map is one **biome**, and the biome picks four things: the landform generator, the four
+ground texture sets, the four tree species, and the site rules that place them. Everything
+downstream — erosion, lakes, trails, LOD, export — is shared.
+
+| | **Temperate** | **Arid (Crusader)** |
+|---|---|---|
+| landforms | rolling fBM + ridged massifs | flat basins + hard-stepped sandstone mesas |
+| water | priority-flood mountain lakes | one carved through-flowing river, with fords |
+| ground | grass / forest-floor / rock / dirt | sand / gravel / sandstone / dry clay |
+| trees | pine, spruce, broadleaf, birch | date palm, acacia, tamarisk, dead wood |
+| character | closed forest with clearings | bare flats, a green ribbon along the river |
+
+Pick it at the top of the Terrain panel, or boot with `WED_BIOME=arid`.
+
+## Camera modes
+
+- **Fly** (default) — RMB-drag look · WASD+QE move · scroll speed · Shift boost.
+- **RTS** (**F3**, or `WED_RTS=1`) — ground-anchored orbit for looking at a map rather than
+  flying through it: WASD/arrows or screen-edge pan, scroll to zoom (22–130 m), MMB or Q/E
+  to rotate, pitch coupled to zoom. It also switches the graphics preset to the RTS budget
+  — no DoF or god rays, native resolution, three tight shadow cascades — because from a map
+  view those cinematic effects mostly blur what you are trying to read.
+  `WED_RTS_FULLGFX=1` keeps the cinematic preset for A/B comparisons.
 
 ## What it generates
 
@@ -50,6 +76,8 @@ mixer, Regenerate.
 | `WED_CREATURELINE=1` | park review creatures (deer herd + bird + butterflies) at the first meadow and aim the camera |
 | `WED_MODELSHOT=1` | studio contact sheet: every creature model from 4 sides against the sky, camera framed — pair with `WED_SHOT` for a PNG |
 | `WED_SEED=n` | world seed |
+| `WED_BIOME=arid` | boot the arid (Crusader) preset instead of temperate |
+| `WED_RTS=1` | boot the RTS camera + preset; `WED_RTS_CAM="fx,fz,dist[,yaw°]"` stages a repeatable view (focus at map-extent fractions) |
 | `WED_LODLINE=1` | tree LOD review grid instead of the forest |
 | `WED_ATMO="..."` | atmospherics tuning override |
 

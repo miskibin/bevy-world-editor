@@ -8,7 +8,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use worldgen::Species;
 use worldgen::rng::Rng;
-use worldgen::scatter::{PROP_BUSH_BIRCH, PROP_LOG, PROP_MUSHROOM, PROP_STUMP};
+use worldgen::scatter::{PROP_BUSH_BIRCH, PROP_LOG, PROP_MUSHROOM, PROP_STUMP, PROP_TUSSOCK};
 
 use crate::foliage;
 use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
@@ -76,29 +76,80 @@ fn drain_props(
 #[derive(Resource)]
 struct PlainPropMaterial(Handle<StandardMaterial>);
 
-/// Bush: dome of sprig cards fanning up/outward from the root.
-pub(crate) fn bush_data(species: Species, seed: u32) -> MeshData {
+/// Shape knobs for a clump of sprig cards. One builder covers bushes, desert scrub and
+/// dry tussocks — they differ only in how many cards there are, how long, how upright and
+/// what colour, and separate builders for that would be three copies of the same loop.
+pub(crate) struct ClumpShape {
+    /// Atlas slot whose leaf region the cards sample.
+    pub slot: usize,
+    pub tint: [f32; 3],
+    pub cards: u32,
+    /// Card length range in metres.
+    pub len: (f32, f32),
+    /// Pitch off horizontal, radians. Near `FRAC_PI_2` = upright, low = splayed.
+    pub pitch: (f32, f32),
+    /// Lateral scatter of card roots.
+    pub spread: f32,
+}
+
+/// Temperate bush: dome of sprig cards fanning up/outward from the root.
+pub(crate) fn bush_shape(slot: usize, birch: bool) -> ClumpShape {
+    ClumpShape {
+        slot,
+        tint: if birch { [1.15, 1.1, 0.65] } else { [0.95, 1.0, 0.8] },
+        cards: 9,
+        len: (0.9, 1.5),
+        pitch: (0.5, 1.15),
+        spread: 0.15,
+    }
+}
+
+/// Desert scrub: fewer, shorter, splayed cards in a dusty grey-green — a thorny ball
+/// hugging the ground, not a leafy dome.
+pub(crate) fn scrub_shape(slot: usize) -> ClumpShape {
+    ClumpShape {
+        slot,
+        tint: [0.86, 0.88, 0.62],
+        cards: 7,
+        len: (0.5, 0.9),
+        pitch: (0.25, 0.85),
+        spread: 0.22,
+    }
+}
+
+/// Dry tussock: a tall, tight, near-vertical fan of straw-coloured blades. These mark the
+/// riverbank from a distance, so they lean on colour more than shape.
+pub(crate) fn tussock_shape(slot: usize) -> ClumpShape {
+    ClumpShape {
+        slot,
+        tint: [1.35, 1.16, 0.52],
+        cards: 10,
+        len: (0.55, 1.0),
+        pitch: (0.95, 1.40),
+        spread: 0.10,
+    }
+}
+
+pub(crate) fn clump_data(shape: &ClumpShape, seed: u32) -> MeshData {
     let mut md = MeshData::default();
     let mut rng = Rng::new(seed);
-    let (u0, v0, u1, v1) = foliage::leaf_uv(species);
-    let tint = match species {
-        Species::Birch => [1.15, 1.1, 0.65],
-        _ => [0.95, 1.0, 0.8],
-    };
-    let cards = 9;
+    let (u0, v0, u1, v1) = foliage::leaf_uv(shape.slot);
+    let tint = shape.tint;
+    let cards = shape.cards;
     for c in 0..cards {
         let az = c as f32 / cards as f32 * std::f32::consts::TAU + rng.f32();
-        let pitch = rng.range(0.5, 1.15); // up-and-out
+        let pitch = rng.range(shape.pitch.0, shape.pitch.1); // up-and-out
         let dir = Vec3::new(
             az.cos() * pitch.cos(),
             pitch.sin(),
             az.sin() * pitch.cos(),
         )
         .normalize();
-        let len = rng.range(0.9, 1.5);
+        let len = rng.range(shape.len.0, shape.len.1);
         let side = dir.cross(Vec3::Y).normalize_or_zero();
         let side = if side == Vec3::ZERO { Vec3::X } else { side } * (len * 0.5);
-        let base_p = Vec3::new(rng.signed() * 0.15, 0.02, rng.signed() * 0.15);
+        let base_p =
+            Vec3::new(rng.signed() * shape.spread, 0.02, rng.signed() * shape.spread);
         let j = 0.85 + rng.f32() * 0.3;
         let col = [tint[0] * j, tint[1] * j, tint[2] * j * 0.95, 1.0];
         let start = md.positions.len() as u32;
@@ -222,19 +273,43 @@ fn rebuild_on_ready(
     mut queue: ResMut<PropQueue>,
     plain_res: Option<Res<PlainPropMaterial>>,
 ) {
-    let (Some(world), Some(_assets)) = (world, assets) else { return };
+    let (Some(world), Some(assets)) = (world, assets) else { return };
     if !world.is_changed() || std::env::var("WED_NOPROPS").is_ok() {
         return;
     }
     let off = world_offset(&world.0.height);
 
-    // Base variants (2 per bush species, 2 log seeds, 1 stump).
-    let bushes = [
-        bush_data(Species::Broadleaf, 11),
-        bush_data(Species::Broadleaf, 23),
-        bush_data(Species::Birch, 31),
-        bush_data(Species::Birch, 47),
-    ];
+    // Base variants, 2 per family. Which families exist is biome-dependent: the arid
+    // scatter only ever emits scrub and tussocks, so building logs/stumps/mushrooms for it
+    // would be dead meshes — and vice versa.
+    let arid = world.0.biome == worldgen::Biome::Arid;
+    let leaf_slot = |sp: Species| assets.slot_of(sp);
+    let (bushes, tussocks) = if arid {
+        // Tamarisk's quadrant is the fine feathery spray — the right texture for both a
+        // thorn bush and a grass tuft.
+        let s = leaf_slot(Species::Tamarisk);
+        (
+            [
+                clump_data(&scrub_shape(s), 11),
+                clump_data(&scrub_shape(s), 23),
+                clump_data(&scrub_shape(s), 31),
+                clump_data(&scrub_shape(s), 47),
+            ],
+            Some([clump_data(&tussock_shape(s), 5), clump_data(&tussock_shape(s), 17)]),
+        )
+    } else {
+        let bl = leaf_slot(Species::Broadleaf);
+        let bi = leaf_slot(Species::Birch);
+        (
+            [
+                clump_data(&bush_shape(bl, false), 11),
+                clump_data(&bush_shape(bl, false), 23),
+                clump_data(&bush_shape(bi, true), 31),
+                clump_data(&bush_shape(bi, true), 47),
+            ],
+            None,
+        )
+    };
     let logs = [log_data(5, false), log_data(9, false)];
     let stump = log_data(3, true);
     let shrooms = [mushroom_data(2), mushroom_data(6), mushroom_data(14)];
@@ -261,6 +336,16 @@ fn rebuild_on_ready(
                 p.yaw,
                 p.scale,
             ),
+            k if k == PROP_TUSSOCK => {
+                if let Some(t) = &tussocks {
+                    leafy.entry(key).or_default().append_transformed(
+                        &t[(p.x as u32 % 2) as usize],
+                        pos,
+                        p.yaw,
+                        p.scale,
+                    );
+                }
+            }
             k => {
                 let idx = if k == PROP_BUSH_BIRCH { 2 } else { 0 } + (p.x as u32 % 2) as usize;
                 leafy.entry(key).or_default().append_transformed(&bushes[idx], pos, p.yaw, p.scale)

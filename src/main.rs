@@ -25,6 +25,7 @@ mod lodline;
 mod profile;
 mod props;
 mod rocks;
+mod rts;
 mod sky;
 mod stats;
 mod water_mat;
@@ -66,6 +67,7 @@ fn main() {
         .add_plugins((
             sky::SkyPlugin,               // camera + sun + atmosphere + IBL
             flycam::FlyCamPlugin,         // free camera controls
+            rts::RtsPlugin,               // F3 / WED_RTS: ground-anchored RTS camera + preset
             genrun::GenPlugin,            // async worldgen pipeline + regenerate
             terrain_mat::TerrainMatPlugin, // splat ExtendedMaterial + texture arrays
             water_mat::WaterMatPlugin,    // lake shader material

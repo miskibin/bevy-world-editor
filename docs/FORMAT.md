@@ -91,7 +91,10 @@ format existed (regression-tested).
 dir/
   heightmap.r16        # 16-bit LE row-major, row 0 = min Z edge; range meta.json
   heightmap.exr        # 32-bit float meters (optional flag)
-  splatmap.png         # RGBA8 material weights: R grass, G forest-floor, B rock, A dirt
+  splatmap.png         # RGBA8 material weights, one channel per ground layer in the
+                       # BIOME's order — read meta.json "splat_layers", never assume:
+                       #   temperate: R grass, G forest-floor, B rock,      A dirt
+                       #   arid:      R sand,  G sand-gravel,  B sandstone, A dry-clay
   masks/moisture.png   # PNG16
   masks/flow.png
   masks/trail_wear.png
@@ -100,11 +103,15 @@ dir/
   instances.csv        # mesh,x,y,z,yaw,scale — same data, flat
   manifest.json        # {"format_version":1,"mesh_ids":[..with per-id counts..]}
   meta.json            # world_size_m, grid_resolution, cell_size_m,
-                       # height_min_m, height_max_m, seed, generator_version
+                       # height_min_m, height_max_m, seed, generator_version,
+                       # biome ("temperate" | "arid"),
+                       # splat_layers — the 4 ground texture-set names, RGBA order
 ```
 
 `mesh_id` grammar: `<family>/<species-or-kind>/<variant>` — e.g. `tree/birch/1`,
 `rock/boulder/3`, `prop/bush_broadleaf/0`, `prop/log/1`, `prop/mushroom/2`.
+Arid maps add `tree/date_palm/*`, `tree/acacia/*`, `tree/tamarisk/*`,
+`tree/dead_tree/*`, `prop/scrub/0` and `prop/tussock/0`.
 IDs are STABLE across releases; new ids may be added, existing ids never change
 meaning.
 

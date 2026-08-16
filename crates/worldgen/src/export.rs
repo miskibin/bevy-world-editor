@@ -15,8 +15,10 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use crate::biome::Biome;
 use crate::scatter::{
-    PROP_BUSH_BIRCH, PROP_BUSH_BROADLEAF, PROP_LOG, PROP_MUSHROOM, PROP_STUMP,
+    PROP_BUSH_BIRCH, PROP_BUSH_BROADLEAF, PROP_LOG, PROP_MUSHROOM, PROP_SCRUB, PROP_STUMP,
+    PROP_TUSSOCK,
 };
 use crate::tree::Species;
 use crate::World;
@@ -119,6 +121,10 @@ fn species_name(s: Species) -> &'static str {
         Species::Spruce => "spruce",
         Species::Broadleaf => "broadleaf",
         Species::Birch => "birch",
+        Species::DatePalm => "date_palm",
+        Species::Acacia => "acacia",
+        Species::Tamarisk => "tamarisk",
+        Species::DeadTree => "dead_tree",
     }
 }
 
@@ -131,6 +137,8 @@ fn prop_name(kind: u8) -> &'static str {
         PROP_LOG => "log",
         PROP_STUMP => "stump",
         PROP_MUSHROOM => "mushroom",
+        PROP_SCRUB => "scrub",
+        PROP_TUSSOCK => "tussock",
         _ => "unknown",
     }
 }
@@ -286,8 +294,12 @@ pub fn export_bundle(
         files.push(path);
     }
 
-    // ── splatmap.png — RGBA8 material weights (R grass, G forest-floor, B rock, A dirt).
-    // CPU approximation of `terrain.wgsl`'s weight logic. DIVERGENCES from the shader,
+    // ── splatmap.png — RGBA8 material weights, one channel per ground layer in
+    // `Biome::ground_layers()` order (temperate: grass / forest-floor / rock / dirt;
+    // arid: sand / gravel / sandstone / dry-clay). The channel→texture mapping is written
+    // into meta.json so a consumer never has to guess.
+    // CPU approximation of `terrain.wgsl`'s weight logic — the two branches here mirror the
+    // two branches there, and MUST be edited together. DIVERGENCES from the shader,
     // deliberate (the shader's per-pixel character noise has no CPU counterpart at grid
     // res): (1) the organic `patch_noise` boundary wobble on every threshold is dropped —
     // we use the shader's *central* thresholds; (2) the dirt "dry patch" term's noise mask
@@ -305,12 +317,28 @@ pub fn export_bundle(
             let f = flow_n[i];
             let t = world.trails[i];
 
-            let rock = smoothstep(0.16, 0.30, shader_slope);
-            let dirt_flow = smoothstep(0.35, 0.75, f);
-            let dirt_dry = smoothstep(0.25, 0.05, m) * 0.5; // shader ×noise → ×mean
-            let dirt = (dirt_flow + dirt_dry).clamp(0.0, 1.0) * (1.0 - rock);
-            let ff = smoothstep(0.28, 0.58, m) * (1.0 - rock) * (1.0 - dirt);
-            let grass = (1.0 - rock - dirt - ff).max(0.0);
+            let (grass, ff, rock, dirt) = match world.biome {
+                Biome::Temperate => {
+                    let rock = smoothstep(0.16, 0.30, shader_slope);
+                    let dirt_flow = smoothstep(0.35, 0.75, f);
+                    let dirt_dry = smoothstep(0.25, 0.05, m) * 0.5; // shader ×noise → ×mean
+                    let dirt = (dirt_flow + dirt_dry).clamp(0.0, 1.0) * (1.0 - rock);
+                    let ff = smoothstep(0.28, 0.58, m) * (1.0 - rock) * (1.0 - dirt);
+                    (( 1.0 - rock - dirt - ff).max(0.0), ff, rock, dirt)
+                }
+                Biome::Arid => {
+                    // Sandstone takes over sooner than temperate rock does: an arid map's
+                    // relief is scarps, and sand does not cling to a scarp.
+                    let rock = smoothstep(0.10, 0.22, shader_slope);
+                    // Cracked clay = the wet flat by the river; it is the only "lush" read
+                    // the desert gets, so it is keyed on moisture and killed on any slope.
+                    let clay = smoothstep(0.45, 0.80, m) * (1.0 - rock);
+                    // Gravel/alluvium follows the washes — where water HAS run, not where
+                    // it stands. Flow, not moisture, is what separates the two.
+                    let gravel = smoothstep(0.22, 0.62, f) * (1.0 - rock) * (1.0 - clay);
+                    ((1.0 - rock - clay - gravel).max(0.0), gravel, rock, clay)
+                }
+            };
 
             // Trail wear punches worn earth (dirt) through every layer, like the shader's
             // trail lane: pull all weights toward pure dirt by the lane factor.
@@ -452,6 +480,17 @@ pub fn export_bundle(
             jstr(&seed_meta.generator_version)
         ));
         // Additive fields (readers ignore unknowns per the FORMAT stability promise).
+        s.push_str(&format!("  \"biome\": {},\n", jstr(world.biome.id())));
+        // Splat channel → ground texture set, in RGBA order. Without this a consumer has
+        // to know which biome wrote the bundle to know what channel G means.
+        let layers = world.biome.ground_layers();
+        s.push_str(&format!(
+            "  \"splat_layers\": [{}, {}, {}, {}],\n",
+            jstr(layers[0]),
+            jstr(layers[1]),
+            jstr(layers[2]),
+            jstr(layers[3])
+        ));
         s.push_str("  \"heightmap_r16\": \"u16 LE, row-major, row 0 = min Z; h = height_min_m + (v/65535)*(height_max_m-height_min_m)\"");
         if opts.exr {
             s.push_str(",\n  \"heightmap_float_file\": \"heightmap.f32\",\n");
@@ -487,6 +526,7 @@ mod tests {
             terrain: TerrainParams { size: 96, ..Default::default() },
             erosion: ErosionParams { droplets: 4000, ..Default::default() },
             forest: ForestParams::default(),
+            ..Default::default()
         };
         generate(&p, |_, _| {})
     }

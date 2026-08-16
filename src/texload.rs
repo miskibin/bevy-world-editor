@@ -146,22 +146,21 @@ pub fn load_single(path: &str, srgb: bool) -> Option<Image> {
     Some(image)
 }
 
-/// The four ground layers, in shader-layer order.
-const GROUND_LAYERS: [&str; 4] = ["grass", "forest_floor", "rock", "dirt"];
-
 pub struct GroundArrays {
     pub albedo: Image,
     pub normal: Image,
     pub rough: Image,
 }
 
-/// Load all ground maps into the three arrays. None if any albedo is missing (the app
-/// then falls back to a flat-colour material and still runs).
-pub fn load_ground_arrays() -> Option<GroundArrays> {
+/// Load the biome's four ground layers into the three texture arrays, in shader-layer
+/// order ([`worldgen::Biome::ground_layers`]). `None` if any albedo is missing — the app
+/// then falls back to a flat-colour material and still runs, which is what happens on a
+/// checkout that hasn't run `tools/fetch_textures.ps1` yet.
+pub fn load_ground_arrays(biome: worldgen::Biome) -> Option<GroundArrays> {
     let mut albedos = Vec::new();
     let mut normals = Vec::new();
     let mut roughs = Vec::new();
-    for layer in GROUND_LAYERS {
+    for layer in biome.ground_layers() {
         let dir = format!("assets/textures/ground/{layer}");
         albedos.push(load_rgba(&format!("{dir}/albedo.jpg"))?);
         normals.push(load_rgba(&format!("{dir}/normal.jpg"))?);

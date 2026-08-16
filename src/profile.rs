@@ -28,6 +28,24 @@ const POSES: [Pose; 5] = [
     Pose { label: "ridge-vista", eye: (0.20, 0.20, 60.0), target: (0.80, 0.80, 0.0) },
 ];
 
+/// Poses for `WED_RTS=1` runs — the four viewpoints an RTS camera actually produces,
+/// spanning its zoom range. Measuring the RTS preset against the fly-cam poses above would
+/// benchmark framings the camera cannot reach (it never gets to 1.7 m, never to 260 m) and
+/// therefore says nothing about how the mode performs.
+const RTS_POSES: [Pose; 4] = [
+    // Closest zoom: the most per-tree entities on screen, so the CPU worst case.
+    Pose { label: "rts-close", eye: (0.50, 0.56, 22.0), target: (0.50, 0.50, 0.0) },
+    Pose { label: "rts-mid", eye: (0.50, 0.60, 60.0), target: (0.50, 0.50, 0.0) },
+    // Furthest zoom: most chunks in frame, so the draw-call/merged-tier worst case.
+    Pose { label: "rts-far", eye: (0.50, 0.70, 130.0), target: (0.50, 0.50, 0.0) },
+    // The oasis: the densest vegetation on an arid map is all on the riverbank.
+    Pose { label: "rts-river", eye: (0.34, 0.46, 45.0), target: (0.40, 0.40, 0.0) },
+];
+
+fn poses() -> &'static [Pose] {
+    if std::env::var("WED_RTS").is_ok() { &RTS_POSES } else { &POSES }
+}
+
 #[derive(Resource)]
 struct ProfileRun {
     idx: usize,
@@ -81,14 +99,14 @@ fn drive_profile(
     if *warm < 6.0 {
         return;
     }
-    if run.idx >= POSES.len() {
+    if run.idx >= poses().len() {
         return;
     }
 
     let hf = &world.0.height;
     let off = world_offset(hf);
     let ext = hf.extent();
-    let pose = &POSES[run.idx];
+    let pose = &poses()[run.idx];
     let place = |(fx, fz, h): (f32, f32, f32)| {
         let (mx, mz) = (ext * fx, ext * fz);
         Vec3::new(mx + off, hf.sample_world(mx, mz) + h, mz + off)
@@ -119,7 +137,7 @@ fn drive_profile(
     let median = if s.is_empty() { 0.0 } else { s[s.len() / 2] };
     let p95 = if s.is_empty() { 0.0 } else { s[(s.len() * 95 / 100).min(s.len() - 1)] };
     let passes = crate::stats::top_passes(&diags, 5);
-    let label = POSES[run.idx].label.to_string();
+    let label = poses()[run.idx].label.to_string();
     info!(
         "PROFILE {label}: {median:.2} ms median ({:.0} fps), p95 {p95:.2} ms | {passes}",
         1000.0 / median.max(0.01)
@@ -128,7 +146,7 @@ fn drive_profile(
     run.idx += 1;
     run.elapsed = 0.0;
 
-    if run.idx >= POSES.len() {
+    if run.idx >= poses().len() {
         info!("──────── PROFILE SUMMARY ────────");
         for (label, median, p95, passes) in &run.results {
             info!(

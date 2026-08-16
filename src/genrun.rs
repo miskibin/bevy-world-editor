@@ -25,8 +25,16 @@ pub struct GenParams(pub worldgen::WorldParams);
 
 impl Default for GenParams {
     fn default() -> Self {
-        let mut p = worldgen::WorldParams::default();
-        p.forest.water_level = WATER_LEVEL;
+        // `WED_BIOME=arid` boots straight into the desert preset — the staging hook for
+        // screenshots and profiling runs, which can't click the panel.
+        let biome = match std::env::var("WED_BIOME").as_deref() {
+            Ok("arid") | Ok("crusader") => worldgen::Biome::Arid,
+            _ => worldgen::Biome::Temperate,
+        };
+        let mut p = worldgen::WorldParams::for_biome(biome);
+        if biome == worldgen::Biome::Temperate {
+            p.forest.water_level = WATER_LEVEL;
+        }
         if let Ok(seed) = std::env::var("WED_SEED") {
             if let Ok(s) = seed.trim().parse::<u32>() {
                 p.terrain.seed = s;

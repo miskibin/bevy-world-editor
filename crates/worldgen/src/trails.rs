@@ -92,13 +92,27 @@ pub fn build_trails(
     let size = hf.size;
     let side = size / COARSE;
 
-    // Coarse cost: gentle ground cheap, steep expensive, water impassable.
+    // Coarse cost: gentle ground cheap, steep expensive, deep water impassable.
+    //
+    // **Shallow water is passable at a price.** Treating every wet cell as a wall was fine
+    // when the only water was mountain lakes (you walk around a lake anyway), but a
+    // through-flowing river would then cut the map into two disconnected halves with no
+    // path ever crossing. Costing a shin-deep reach at ~25× dry ground means routes prefer
+    // dry land everywhere except where the crossing genuinely pays — i.e. they find the
+    // fords, exactly like the trails they stand in for.
+    //
+    // Thigh-deep. `RiverParams::min_depth` is tuned to guarantee at least one reach comes
+    // in under this on every seed — the two constants only mean anything together.
+    const FORD_DEPTH: f32 = 1.1;
     let mut cost = vec![1.0f32; side * side];
     for cz in 0..side {
         for cx in 0..side {
             let i = (cz * COARSE + COARSE / 2) * size + cx * COARSE + COARSE / 2;
-            cost[cz * side + cx] = if water[i].is_finite() {
+            let depth = if water[i].is_finite() { water[i] - hf.h[i] } else { -1.0 };
+            cost[cz * side + cx] = if depth > FORD_DEPTH {
                 1.0e6
+            } else if depth > 0.0 {
+                25.0 + depth * 20.0
             } else {
                 1.0 + slope[i] * 40.0
             };
@@ -237,7 +251,7 @@ mod tests {
     #[test]
     fn trails_exist_and_bounded() {
         let tp = TerrainParams { size: 256, ..Default::default() };
-        let hf = generate_base(&tp, |_| {});
+        let hf = generate_base(&tp, crate::biome::TerrainStyle::Mountains, |_| {});
         let slope = slope_map(&hf);
         let water = vec![f32::NEG_INFINITY; 256 * 256];
         let wear = build_trails(&hf, &slope, &water, 7);

@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 use worldgen::tree::{LeafAnchor, Segment, TreeSkeleton};
-use worldgen::{ALL_SPECIES, Species};
+use worldgen::{Biome, Species};
 
 use crate::foliage;
 
@@ -98,6 +98,28 @@ fn foliage_tint(sp: Species, var: usize) -> [f32; 3] {
             [1.0, 1.06, 0.78],
             [1.52, 1.18, 0.42], // golden birch
         ][var % 4],
+        // Desert foliage is duller, greyer and more olive than temperate green — a
+        // saturated leaf next to sand is the loudest "this isn't a desert" cue there is.
+        Species::DatePalm => [
+            [0.96, 1.02, 0.72],
+            [1.06, 1.04, 0.66],
+            [0.86, 0.94, 0.64],
+            [1.14, 1.00, 0.58], // sun-scorched outer fronds
+        ][var % 4],
+        Species::Acacia => [
+            [0.88, 0.96, 0.70],
+            [0.96, 1.00, 0.66],
+            [0.80, 0.88, 0.62],
+            [1.02, 0.98, 0.60],
+        ][var % 4],
+        Species::Tamarisk => [
+            [0.92, 0.94, 0.80],
+            [1.00, 0.96, 0.74],
+            [0.84, 0.88, 0.76],
+            [1.04, 0.92, 0.70],
+        ][var % 4],
+        // Never sampled (no foliage), but the match must answer for every species.
+        Species::DeadTree => [1.0, 1.0, 1.0],
     }
 }
 
@@ -105,6 +127,8 @@ fn wood_tint(sp: Species, var: usize) -> [f32; 3] {
     let v = [1.0, 0.88, 1.08, 0.95][var % 4];
     match sp {
         Species::Birch => [v, v, v], // keep the white bark white-ish
+        // Sun-bleached driftwood — the dead trunks should read pale against the sand.
+        Species::DeadTree => [v * 1.18, v * 1.14, v * 1.08],
         _ => [v, v * 0.97, v * 0.94],
     }
 }
@@ -180,14 +204,14 @@ fn tube(md: &mut MeshData, seg: &Segment, sides: u32, bark_uv: Option<(f32, f32,
 /// centre — so hundreds of flat cards light as one soft volume.
 fn build_sprigs(
     sk: &TreeSkeleton,
-    sp: Species,
+    slot: usize,
     every: usize,
     size_mul: f32,
     crossed: bool,
     tint: [f32; 3],
 ) -> MeshData {
     let mut md = MeshData::default();
-    let region = foliage::leaf_uv(sp);
+    let region = foliage::leaf_uv(slot);
     let canopy = Vec3::from_array(sk.canopy_center);
     for (i, l) in sk.leaves.iter().enumerate() {
         if i % every != 0 {
@@ -248,11 +272,13 @@ fn card(
 }
 
 /// LOD2: 3-sided atlas-bark trunk + ≤12 huge cards. One material → one entity, mergeable.
-fn build_lod2(sk: &TreeSkeleton, sp: Species, var: usize) -> MeshData {
-    let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(sp)), wood_tint(sp, var));
-    // Horizontal canopy card so the mid-far tier also reads from above (aerial views).
-    {
-        let (u0, v0, u1, v1) = foliage::leaf_uv(sp);
+fn build_lod2(sk: &TreeSkeleton, sp: Species, slot: usize, var: usize) -> MeshData {
+    let mut md = build_wood(sk, 3, 0, Some(foliage::bark_uv(slot)), wood_tint(sp, var));
+    // Horizontal canopy card so the mid-far tier also reads from above — which for an RTS
+    // camera is not an "aerial view" edge case but the ONLY view. Skipped for the leafless
+    // species, where it would paste foliage over a bare skeleton.
+    if sp.has_foliage() {
+        let (u0, v0, u1, v1) = foliage::leaf_uv(slot);
         let t = foliage_tint(sp, var);
         let w = (sk.canopy_radius * 1.5).max(1.8);
         let c = Vec3::from_array(sk.canopy_center);
@@ -271,7 +297,7 @@ fn build_lod2(sk: &TreeSkeleton, sp: Species, var: usize) -> MeshData {
         md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     let every = (sk.leaves.len() / 11).max(1);
-    let leaves = build_sprigs(sk, sp, every, 2.6, false, foliage_tint(sp, var));
+    let leaves = build_sprigs(sk, slot, every, 2.6, false, foliage_tint(sp, var));
     let base = md.positions.len() as u32;
     md.positions.extend_from_slice(&leaves.positions);
     md.normals.extend_from_slice(&leaves.normals);
@@ -295,10 +321,14 @@ pub struct VariantMeshes {
 
 /// Whole-tree crossed billboard: two quads, tree-height tall, canopy-width wide,
 /// sampling the species' full sprig texture. Only ever seen merged, from ~1 km out.
-fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
+fn build_billboard(sk: &TreeSkeleton, sp: Species, slot: usize, tint: [f32; 3]) -> MeshData {
     let mut md = MeshData::default();
-    let (u0, v0, u1, v1) = foliage::leaf_uv(sp);
-    let w = (sk.canopy_radius * 1.6).max(2.0);
+    // A leafless tree billboards from its BARK strip: sampling the leaf region would put a
+    // ghost canopy on a bare skeleton at exactly the distance you can no longer tell it is
+    // one. It also gets no canopy cap below, for the same reason.
+    let leafy = sp.has_foliage();
+    let (u0, v0, u1, v1) = if leafy { foliage::leaf_uv(slot) } else { foliage::bark_uv(slot) };
+    let w = if leafy { (sk.canopy_radius * 1.6).max(2.0) } else { sk.canopy_radius.max(0.8) };
     let h = sk.height.max(4.0);
     let col = [tint[0] * 0.92, tint[1] * 0.92, tint[2] * 0.88, 1.0];
     for axis in [Vec3::X, Vec3::Z] {
@@ -315,6 +345,9 @@ fn build_billboard(sk: &TreeSkeleton, sp: Species, tint: [f32; 3]) -> MeshData {
             md.colors.push(col);
         }
         md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    if !leafy {
+        return md;
     }
     // Horizontal canopy CAP — the vertical cross is edge-on (invisible) from the air, so
     // without this the far forest vanished in aerial views.
@@ -360,18 +393,22 @@ impl MaterialExtension for LeafSway {
 
 #[derive(Resource)]
 pub struct TreeAssets {
-    /// [species][variant]
+    /// Which biome these meshes/atlas were built for.
+    pub biome: Biome,
+    /// The biome's four species, in atlas-slot order.
+    pub species: [Species; 4],
+    /// [slot][variant]
     pub variants: Vec<Vec<VariantMeshes>>,
     pub bark_mats: [Handle<StandardMaterial>; 4],
     pub leaf_mat: Handle<LeafMaterial>,
 }
 
-pub fn species_index(sp: Species) -> usize {
-    match sp {
-        Species::Pine => 0,
-        Species::Spruce => 1,
-        Species::Broadleaf => 2,
-        Species::Birch => 3,
+impl TreeAssets {
+    /// Atlas/mesh slot for a species. Total on purpose: during the one frame between a
+    /// world of a new biome landing and these assets being rebuilt, a lookup for a species
+    /// this set doesn't have must return a valid index rather than panic on the index.
+    pub fn slot_of(&self, sp: Species) -> usize {
+        self.species.iter().position(|s| *s == sp).unwrap_or(0)
     }
 }
 
@@ -380,7 +417,10 @@ pub struct TreeAssetsPlugin;
 impl Plugin for TreeAssetsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<LeafMaterial>::default())
-            .add_systems(Startup, build_tree_assets);
+            .add_systems(Startup, build_initial_tree_assets)
+            // Ordered ahead of the forest streamer: it looks species up in these assets the
+            // same frame a new world lands, so the rebuild has to have happened first.
+            .add_systems(Update, rebuild_on_biome_change.before(crate::forest::rebuild_on_ready));
     }
 }
 
@@ -405,14 +445,62 @@ fn bark_material(
     })
 }
 
+/// Bark texture folder + tint for a species. Several species share one photographed bark
+/// set and separate on tint — cheaper than five near-identical 2K downloads, and at the
+/// distances a trunk is legible the tint is what you actually read.
+fn bark_source(sp: Species) -> (&'static str, Color) {
+    match sp {
+        Species::Pine => ("pine", Color::WHITE),
+        Species::Spruce => ("pine", Color::srgb(0.62, 0.58, 0.55)),
+        Species::Broadleaf => ("broadleaf", Color::WHITE),
+        Species::Birch => ("broadleaf", Color::WHITE), // replaced by the procedural bark
+        Species::DatePalm => ("palm", Color::WHITE),
+        Species::Acacia => ("broadleaf", Color::srgb(0.42, 0.36, 0.30)),
+        Species::Tamarisk => ("broadleaf", Color::srgb(0.72, 0.52, 0.40)),
+        Species::DeadTree => ("broadleaf", Color::srgb(0.86, 0.82, 0.74)),
+    }
+}
+
+fn build_initial_tree_assets(
+    commands: Commands,
+    meshes: ResMut<Assets<Mesh>>,
+    images: ResMut<Assets<Image>>,
+    mats: ResMut<Assets<StandardMaterial>>,
+    leaf_mats: ResMut<Assets<LeafMaterial>>,
+    params: Res<crate::genrun::GenParams>,
+) {
+    build_tree_assets(params.0.biome, commands, meshes, images, mats, leaf_mats);
+}
+
+/// Regenerating into another biome invalidates every mesh, the atlas and the bark set —
+/// they are all built per-species. Driven off the finished world (not the params) so the
+/// swap lands on the same frame the new trees are spawned.
+fn rebuild_on_biome_change(
+    commands: Commands,
+    meshes: ResMut<Assets<Mesh>>,
+    images: ResMut<Assets<Image>>,
+    mats: ResMut<Assets<StandardMaterial>>,
+    leaf_mats: ResMut<Assets<LeafMaterial>>,
+    world: Option<Res<crate::genrun::GeneratedWorld>>,
+    assets: Option<Res<TreeAssets>>,
+) {
+    let (Some(world), Some(assets)) = (world, assets) else { return };
+    if !world.is_changed() || world.0.biome == assets.biome {
+        return;
+    }
+    build_tree_assets(world.0.biome, commands, meshes, images, mats, leaf_mats);
+}
+
 fn build_tree_assets(
+    biome: Biome,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut leaf_mats: ResMut<Assets<LeafMaterial>>,
 ) {
-    let atlas = images.add(foliage::build_atlas());
+    let species = biome.species();
+    let atlas = images.add(foliage::build_atlas(biome));
     let leaf_mat = leaf_mats.add(ExtendedMaterial {
         base: StandardMaterial {
             base_color_texture: Some(atlas),
@@ -438,39 +526,41 @@ fn build_tree_assets(
         reflectance: 0.18,
         ..default()
     });
-    let bark_mats = [
-        bark_material("pine", Color::WHITE, &mut images, &mut mats),
-        // Spruce: same conifer plates, tinted darker/greyer.
-        bark_material("pine", Color::srgb(0.62, 0.58, 0.55), &mut images, &mut mats),
-        bark_material("broadleaf", Color::WHITE, &mut images, &mut mats),
-        birch_mat,
-    ];
+    let bark_mats = std::array::from_fn(|slot| {
+        let sp = species[slot];
+        if sp == Species::Birch {
+            // ambientCG has no white birch bark — this one is drawn in `foliage`.
+            return birch_mat.clone();
+        }
+        let (dir, tint) = bark_source(sp);
+        bark_material(dir, tint, &mut images, &mut mats)
+    });
 
     let mut variants = Vec::with_capacity(4);
-    for sp in ALL_SPECIES {
+    for (slot, sp) in species.into_iter().enumerate() {
         let mut per_variant = Vec::with_capacity(VARIANTS);
         for var in 0..VARIANTS {
             let sk = worldgen::tree::grow(sp, var as u32 * 131 + 7);
-            let lod2_data = build_lod2(&sk, sp, var);
+            let lod2_data = build_lod2(&sk, sp, slot, var);
             let ft = foliage_tint(sp, var);
             let wt = wood_tint(sp, var);
             per_variant.push(VariantMeshes {
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None, wt).to_mesh()),
-                lod0_leaf: meshes.add(build_sprigs(&sk, sp, 1, 1.0, true, ft).to_mesh()),
+                lod0_leaf: meshes.add(build_sprigs(&sk, slot, 1, 1.0, true, ft).to_mesh()),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None, wt).to_mesh()),
                 // CROSSED cards are non-negotiable at this ring: single quads vanish
                 // edge-on, so whole crowns went transparent at grazing angles (the
                 // see-through-forest artifact). Every-3rd + upsized keeps the quad
                 // budget near the old every-2nd uncrossed count.
-                lod1_leaf: meshes.add(build_sprigs(&sk, sp, 3, 1.75, true, ft).to_mesh()),
+                lod1_leaf: meshes.add(build_sprigs(&sk, slot, 3, 1.75, true, ft).to_mesh()),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
-                billboard_data: build_billboard(&sk, sp, ft),
+                billboard_data: build_billboard(&sk, sp, slot, ft),
             });
         }
         variants.push(per_variant);
     }
 
-    commands.insert_resource(TreeAssets { variants, bark_mats, leaf_mat });
-    info!("tree assets built: 4 species x {VARIANTS} variants x 3 LODs");
+    commands.insert_resource(TreeAssets { biome, species, variants, bark_mats, leaf_mat });
+    info!("tree assets built for {biome:?}: {species:?} x {VARIANTS} variants x 3 LODs");
 }

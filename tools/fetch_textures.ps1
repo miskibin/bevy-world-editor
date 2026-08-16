@@ -28,12 +28,20 @@ $TmpRoot    = Join-Path ([System.IO.Path]::GetTempPath()) 'ambientcg_fetch'
 # birch bark: ambientCG has NO white birch bark material (only finished birch
 # countertop wood) -> deliberately omitted, reported by the caller.
 $Sets = @(
-    @{ Id = 'Grass001';  Dest = 'ground\grass'        }  # natural fresh green lawn/meadow
-    @{ Id = 'Ground023'; Dest = 'ground\forest_floor' }  # brown forest leaf-litter (dirt/leaves/sticks)
-    @{ Id = 'Rock035';   Dest = 'ground\rock'         }  # grey layered/fractured cliff rock
-    @{ Id = 'Ground081'; Dest = 'ground\dirt'         }  # brown bare dirt path, rocky/gravel
-    @{ Id = 'Bark014';   Dest = 'bark\pine'           }  # rough conifer (fir) brown plated bark
-    @{ Id = 'Bark012';   Dest = 'bark\broadleaf'      }  # oak: grey-brown broadleaf bark (beech-like)
+    # --- Temperate biome ground layers (Biome::ground_layers) ---
+    @{ Id = 'Grass001';   Dest = 'ground\grass'        }  # natural fresh green lawn/meadow
+    @{ Id = 'Ground023';  Dest = 'ground\forest_floor' }  # brown forest leaf-litter (dirt/leaves/sticks)
+    @{ Id = 'Rock035';    Dest = 'ground\rock'         }  # grey layered/fractured cliff rock
+    @{ Id = 'Ground081';  Dest = 'ground\dirt'         }  # brown bare dirt path, rocky/gravel
+    # --- Arid biome ground layers ---
+    @{ Id = 'Ground093C'; Dest = 'ground\sand'         }  # fine desert dune sand (desert/dune/granular)
+    @{ Id = 'Ground079S'; Dest = 'ground\sand_gravel'  }  # coarse gravel+sand wash (gravel/rocks/sand)
+    @{ Id = 'Rock029';    Dest = 'ground\sandstone'    }  # red/orange desert cliff face
+    @{ Id = 'Ground026';  Dest = 'ground\dry_clay'     }  # smooth flat clay pan (riverbank/dry lakebed)
+    # --- Bark ---
+    @{ Id = 'Bark014';    Dest = 'bark\pine'           }  # rough conifer (fir) brown plated bark
+    @{ Id = 'Bark012';    Dest = 'bark\broadleaf'      }  # oak: grey-brown broadleaf bark (beech-like)
+    @{ Id = 'Bark009';    Dest = 'bark\palm'           }  # fibrous ringed bark for the date palm
 )
 
 # ambientCG map suffix -> our standard filename

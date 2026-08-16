@@ -26,6 +26,7 @@ impl Plugin for FlyCamPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fly(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -34,7 +35,15 @@ fn fly(
     mut wheel: MessageReader<MouseWheel>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     cam: Single<(&mut Transform, &mut FlyCam)>,
+    mode: Res<crate::rts::CamMode>,
 ) {
+    // Both controllers drive the SAME camera entity (see rts.rs — never a second
+    // Camera3d), so exactly one of them may touch the transform per frame.
+    if mode.is_rts() {
+        motion.clear();
+        wheel.clear();
+        return;
+    }
     let (mut tf, mut fc) = cam.into_inner();
 
     for w in wheel.read() {

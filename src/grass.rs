@@ -16,6 +16,8 @@ use crate::trees_mesh::{LeafMaterial, LeafSway};
 
 const CHUNK_M: f32 = 16.0;
 const RING: f32 = 85.0; // fade edge pushed where blades are near-subpixel + haze covers
+/// Camera height above ground at which grass stops being built at all (metres).
+const GRASS_MAX_EYE: f32 = 48.0;
 // Wide on purpose: the fade is measured per 16 m chunk AABB, so a narrow band makes
 // neighbouring chunks jump in visibly different opacity steps (pale 16 m blocks at the
 // ring edge, worst over shadowed ground). A wide band keeps adjacent steps small.
@@ -81,7 +83,21 @@ fn stream_grass(
     *last_run = 0.0;
 
     let cp = cam.translation;
-    let r_chunks = (RING / CHUNK_M).ceil() as i32 + 1;
+    // Shrink (and eventually switch off) the grass ring by EYE HEIGHT.
+    //
+    // A blade is ~0.3 m tall. From 20 m up it is already a couple of pixels; past ~48 m it
+    // is sub-pixel and contributes nothing but aliasing — yet building those chunk meshes
+    // is one of the streamer's biggest per-frame costs. An RTS camera spends most of its
+    // life above that line, so this is close to a free win there while leaving the ground
+    // level view (where grass is the whole point) untouched.
+    let off = crate::genrun::world_offset(&world.0.height);
+    let eye = (cp.y - world.0.height.sample_world(cp.x - off, cp.z - off)).max(0.0);
+    let ring = if eye >= GRASS_MAX_EYE {
+        0.0
+    } else {
+        RING * (1.0 - eye / GRASS_MAX_EYE).max(0.18)
+    };
+    let r_chunks = (ring / CHUNK_M).ceil() as i32 + 1;
     let centre = ((cp.x / CHUNK_M).floor() as i32, (cp.z / CHUNK_M).floor() as i32);
 
     // Drop chunks that left the ring (hysteresis one chunk).
@@ -91,7 +107,7 @@ fn stream_grass(
         .filter(|k| {
             let cx = (k.0 as f32 + 0.5) * CHUNK_M;
             let cz = (k.1 as f32 + 0.5) * CHUNK_M;
-            Vec2::new(cx - cp.x, cz - cp.z).length() > RING + CHUNK_M * 1.6
+            Vec2::new(cx - cp.x, cz - cp.z).length() > ring + CHUNK_M * 1.6
         })
         .copied()
         .collect();
@@ -150,6 +166,13 @@ fn stream_grass(
 
 /// One merged tuft mesh per chunk; None if the chunk grows nothing.
 fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
+    // No turf in the desert. The moisture gate below would already thin it to the
+    // riverbank, but a green sward is the wrong plant there anyway — dry tussocks do that
+    // job as scattered props, and skipping the whole grass streamer is a real saving on a
+    // map where it would only ever cover a thin ribbon.
+    if w.biome == worldgen::Biome::Arid {
+        return None;
+    }
     let hf = &w.height;
     let size = hf.size;
     let off = world_offset(hf);

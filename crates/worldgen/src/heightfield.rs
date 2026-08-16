@@ -1,5 +1,6 @@
 //! Heightfield storage + the base (pre-erosion) terrain generator.
 
+use crate::biome::TerrainStyle;
 use crate::noise::{fbm, ridged, smoothstep, warped_fbm};
 
 #[derive(Clone)]
@@ -117,9 +118,100 @@ impl Default for TerrainParams {
     }
 }
 
-/// Base heightfield: domain-warped rolling fBM + ridged massifs gated by a low-frequency
-/// mountain mask. Erosion carves the realism afterwards — this only lays out landforms.
-pub fn generate_base(p: &TerrainParams, mut progress: impl FnMut(f32)) -> HeightField {
+/// Base heightfield. Dispatches on the biome's [`TerrainStyle`]; erosion carves the realism
+/// afterwards, so this only lays out landforms.
+pub fn generate_base(
+    p: &TerrainParams,
+    style: TerrainStyle,
+    progress: impl FnMut(f32),
+) -> HeightField {
+    match style {
+        TerrainStyle::Mountains => generate_mountains(p, progress),
+        TerrainStyle::Mesas => generate_mesas(p, progress),
+    }
+}
+
+/// Broad flat basins + hard-stepped sandstone mesas — the Stronghold-Crusader landform.
+///
+/// The whole look lives in one trick: plateaus are built as **stacked slabs with a
+/// deliberately tiny smoothstep band**, so the transition between tiers is a scarp a
+/// couple of metres wide instead of a slope. Widen `SCARP` even slightly and the mesas
+/// melt into ordinary hills — that (plus running full-strength hydraulic erosion over
+/// them) is the fastest way to lose the silhouette entirely.
+///
+/// Everything else is deliberately calm: an RTS map is mostly *buildable ground*, so the
+/// basins get gentle undulation plus wind ripples of barely a metre, and the drama is
+/// concentrated in the few tiers that stand above them.
+fn generate_mesas(p: &TerrainParams, mut progress: impl FnMut(f32)) -> HeightField {
+    let mut hf = HeightField::new(p.size, p.cell);
+    let ext = hf.extent();
+    // Plateau fields at two scales: big buttes and smaller outliers around their feet.
+    let plat_freq = 1.0 / 300.0f32.min(ext * 0.42);
+    let out_freq = 1.0 / 120.0f32.min(ext * 0.20);
+    let roll_freq = 1.0 / 210.0f32.min(ext * 0.32);
+    let dune_freq = 1.0 / 46.0f32;
+
+    // Total relief budget for the stepped tiers, and how it splits between them.
+    let mesa_budget = p.mountain_height * (0.30 + 0.45 * p.mountainousness);
+    const TIERS: usize = 3;
+    // Thresholds rise per tier so higher steps sit nested inside lower ones — that is what
+    // makes a butte read as layered rock rather than as three unrelated blobs.
+    const THRESH: [f32; TIERS] = [0.50, 0.615, 0.72];
+    /// Half-width of the smoothstep band in plateau-field units. Small on purpose: this
+    /// number IS the cliff. See the fn docs.
+    const SCARP: f32 = 0.014;
+
+    for z in 0..p.size {
+        for x in 0..p.size {
+            let wx = x as f32 * p.cell;
+            let wz = z as f32 * p.cell;
+
+            // Gentle basin undulation — the buildable ground.
+            let rolling = warped_fbm(wx * roll_freq, wz * roll_freq, 5, p.warp, p.seed);
+            // Wind ripples: ridged, sub-metre, and faded out on the plateaus (bare rock
+            // does not hold dune forms).
+            let dunes = ridged(wx * dune_freq, wz * dune_freq, 2, p.seed.wrapping_add(41));
+
+            let plat = warped_fbm(wx * plat_freq, wz * plat_freq, 4, p.warp * 0.7, p.seed.wrapping_add(11));
+            let outlier =
+                fbm(wx * out_freq, wz * out_freq, 3, p.seed.wrapping_add(101));
+            // Outliers nudge the plateau field locally, so tier edges gain bays and stacks
+            // instead of tracing one smooth contour all the way round the butte.
+            let field = plat + (outlier - 0.5) * 0.10;
+
+            let mut mesa = 0.0f32;
+            for (k, thr) in THRESH.iter().enumerate() {
+                let step = mesa_budget * (0.46 - 0.10 * k as f32);
+                mesa += smoothstep(thr - SCARP, thr + SCARP, field) * step;
+            }
+            // Cap height: on top of the highest tier the surface is nearly dead flat, so
+            // the mesa top reads as caprock (and is usable ground).
+            let on_top = smoothstep(THRESH[TIERS - 1], THRESH[TIERS - 1] + 0.05, field);
+            let basin = 1.0 - smoothstep(THRESH[0] - SCARP, THRESH[0] + 0.06, field);
+
+            // One consistent tilt across the map so the river has somewhere to run.
+            let tilt = 0.25 * (wx * 0.75 + wz) / (1.75 * ext);
+
+            // Both terms are deliberately small. Ripples of even ~1.5 m at dune wavelength
+            // put a gradient over 0.15 across the WHOLE basin, which quietly destroys the
+            // "broad flat buildable ground" the layout depends on — the relief has to be
+            // spent on the mesas, not smeared over the floor.
+            let h = rolling * p.base_height * 0.26 * (1.0 - on_top * 0.8)
+                + dunes * 0.7 * basin
+                + mesa
+                + tilt * p.base_height;
+            hf.set(x, z, h);
+        }
+        if z % 256 == 0 {
+            progress(z as f32 / p.size as f32);
+        }
+    }
+    progress(1.0);
+    hf
+}
+
+/// Rolling fBM + ridged massifs gated by a low-frequency mountain mask.
+fn generate_mountains(p: &TerrainParams, mut progress: impl FnMut(f32)) -> HeightField {
     let mut hf = HeightField::new(p.size, p.cell);
     let ext = hf.extent();
     // Feature wavelengths in metres (sized for the 1 km reference map), CLAMPED to the
@@ -162,21 +254,27 @@ mod tests {
         TerrainParams { size: 128, ..Default::default() }
     }
 
+    const MTN: TerrainStyle = TerrainStyle::Mountains;
+
     #[test]
     fn base_deterministic() {
-        let a = generate_base(&small(), |_| {});
-        let b = generate_base(&small(), |_| {});
-        assert_eq!(a.h, b.h);
+        for style in [TerrainStyle::Mountains, TerrainStyle::Mesas] {
+            let a = generate_base(&small(), style, |_| {});
+            let b = generate_base(&small(), style, |_| {});
+            assert_eq!(a.h, b.h, "{style:?} not deterministic");
+        }
     }
 
     #[test]
     fn base_bounded_finite() {
         let p = small();
-        let hf = generate_base(&p, |_| {});
         let max = p.base_height * 1.2 + p.mountain_height;
-        for &v in &hf.h {
-            assert!(v.is_finite());
-            assert!(v >= -1.0 && v <= max, "v={v}");
+        for style in [TerrainStyle::Mountains, TerrainStyle::Mesas] {
+            let hf = generate_base(&p, style, |_| {});
+            for &v in &hf.h {
+                assert!(v.is_finite());
+                assert!(v >= -1.0 && v <= max, "{style:?} v={v}");
+            }
         }
     }
 
@@ -184,14 +282,47 @@ mod tests {
     fn seed_changes_map() {
         let mut p2 = small();
         p2.seed = 999;
-        let a = generate_base(&small(), |_| {});
-        let b = generate_base(&p2, |_| {});
+        let a = generate_base(&small(), MTN, |_| {});
+        let b = generate_base(&p2, MTN, |_| {});
         assert_ne!(a.h, b.h);
+    }
+
+    /// The mesa style must actually produce cliffs — and, just as importantly, must leave
+    /// most of the map flat enough to build and manoeuvre on. That combination (broad
+    /// level ground punctuated by walls) *is* the Crusader layout; rolling hills with the
+    /// same relief budget would be a different map entirely.
+    ///
+    /// Measured against the shipped arid preset rather than `TerrainParams::default()`,
+    /// because the preset's own relief budget is what players actually get.
+    #[test]
+    fn mesas_are_flat_ground_plus_real_scarps() {
+        let mut p = crate::WorldParams::for_biome(crate::Biome::Arid).terrain;
+        p.size = 256;
+        let hf = generate_base(&p, TerrainStyle::Mesas, |_| {});
+        let (mut steep, mut flat, mut n) = (0usize, 0usize, 0usize);
+        for z in 1..hf.size - 1 {
+            for x in 1..hf.size - 1 {
+                let (gx, gz) = hf.gradient(x as f32, z as f32);
+                let s = (gx * gx + gz * gz).sqrt();
+                n += 1;
+                if s > 1.5 {
+                    steep += 1; // ~56°+ — a wall
+                }
+                if s < 0.25 {
+                    flat += 1; // under ~14° — buildable, walkable, siegeable
+                }
+            }
+        }
+        let steep_frac = steep as f32 / n as f32;
+        let flat_frac = flat as f32 / n as f32;
+        assert!(steep_frac > 0.005, "no scarps at all ({steep_frac})");
+        assert!(steep_frac < 0.20, "the whole map is cliff ({steep_frac})");
+        assert!(flat_frac > 0.55, "not enough buildable ground ({flat_frac})");
     }
 
     #[test]
     fn sample_matches_grid_and_interpolates() {
-        let hf = generate_base(&small(), |_| {});
+        let hf = generate_base(&small(), MTN, |_| {});
         assert_eq!(hf.sample(10.0, 20.0), hf.get(10, 20));
         let mid = hf.sample(10.5, 20.0);
         let lo = hf.get(10, 20).min(hf.get(11, 20));

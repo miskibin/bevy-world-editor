@@ -37,6 +37,33 @@ vsync off, 1088 m map:
 | high-overview | 6.2 | 161 |
 | ridge-vista | 9.6 | 105 |
 
+### RTS camera + arid preset (2026-08)
+
+512 m arid map, seed 7, release, vsync off, `WED_RTS=1 WED_PROFILE=1` (RTS pose set):
+
+| Pose | ms (median) | fps |
+|---|---|---|
+| rts-close (22 m zoom) | 6.06 | 165 |
+| rts-mid (60 m) | 5.69 | 176 |
+| rts-far (130 m) | 5.35 | 187 |
+| rts-river (oasis) | 5.87 | 170 |
+
+Peak working set **593 MB**. Σ GPU passes ≈ 1.3 ms against a ~5.7 ms frame, so this is
+still CPU-bound — the remaining budget is in systems, not shaders.
+
+**An RTS camera is a different perf problem from a fly-cam, and most of the win is in
+admitting that.** It cannot stand on the ground and it cannot climb to 260 m, so:
+
+- LOD rings pulled in (LOD0 75→55 m, LOD1 230→185, LOD2 300→240, ultra 900→620). The
+  full-mesh ring was rendering detail that is physically unresolvable from 20–130 m up.
+- Grass builds nothing above 48 m of eye height and shrinks its ring below that — from a
+  map view a blade is sub-pixel, and building those chunk meshes was one of the streamer's
+  larger per-frame costs. Arid skips grass entirely (dry tussocks are scattered props).
+- Shadow cascades 4×4096 over 700 m → 3×2048 over 280 m. Shorter is both faster AND
+  sharper here: the unused cascade range was pure wasted resolution.
+- DoF and god rays off, supersampling back to native. Not a quality cut so much as a
+  re-allocation — those effects are aimed at a camera standing in the scene.
+
 **Big maps need bounded per-frame work, not faster code.** Two changes made 1 km+ maps viable:
 - **Incremental world build.** Terrain, water, far-forest, prop and rock chunk meshes are queued at
   world-ready and drained a few per frame. Building them all in the frame the world lands froze the

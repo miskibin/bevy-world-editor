@@ -14,17 +14,25 @@ use bevy::prelude::*;
 use worldgen::TreeInstance;
 
 use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
-use crate::trees_mesh::{MeshData, TreeAssets, species_index};
+use crate::trees_mesh::{MeshData, TreeAssets};
 
 const CHUNK_M: f32 = 64.0;
 /// LOD swap distances (camera → tree).
+//
+// Retuned 2026-08 for the RTS view. The old values assumed a fly-cam that could stand
+// under a canopy at head height, where a tree 70 m out still fills a good slice of the
+// screen. An RTS camera sits 22–130 m up looking DOWN: that same tree covers a fraction of
+// the height in pixels and its LOD0 detail is simply not resolvable, so the full-mesh ring
+// was paying for geometry nobody can see. Pulling every ring in is the largest CPU saving
+// available here, and PERF.md measured this scene as CPU-bound in the heavy poses.
+//
 // UE-research: the full-mesh alpha-card ring is where overdraw lives — keep it tight.
-const LOD0_END: f32 = 75.0;
-const LOD1_END: f32 = 230.0; // full-mesh->billboard swap pushed out of the readable range
+const LOD0_END: f32 = 55.0;
+const LOD1_END: f32 = 185.0; // full-mesh->billboard swap pushed out of the readable range
 /// Per-tree entities stop here — beyond it the merged chunk meshes take over. Keeping
 /// this SHORT is what makes big maps affordable:each tree costs 4 entities, so a 700 m
 /// radius on a 1 km map meant ~60k entities and a 100 ms frame (measured).
-const LOD2_END: f32 = 300.0;
+const LOD2_END: f32 = 240.0;
 // ZERO on purpose: Bevy's visibility-range dither is per-entity, so the fade-out of
 // one LOD tier and the fade-in of the next are NOT complementary — inside any nonzero
 // band every tree renders half-dissolved and the backdrop shows through the canopy
@@ -33,8 +41,9 @@ const LOD2_END: f32 = 300.0;
 const LOD_BAND: f32 = 2.0;
 /// Chunks fully inside this radius get individual trees.
 const NEAR_RADIUS: f32 = LOD2_END + 60.0;
-/// Merged-LOD2 tier hands off to the ultra billboards here.
-const ULTRA_START: f32 = 900.0;
+/// Merged-LOD2 tier hands off to the ultra billboards here. 900 was sized for a 2 km map
+/// seen from the air; on a compact map it meant the cheap tier never ran at all.
+const ULTRA_START: f32 = 620.0;
 /// The merged chunk tier starts WELL BEFORE the per-tree tier ends. The two measure
 /// different distances — per-tree ranges use the entity origin, the merged chunk uses its
 /// AABB centre — so equal thresholds leave a band (up to half a chunk wide) where a tree
@@ -68,7 +77,7 @@ fn chunk_key(x: f32, z: f32) -> (i32, i32) {
     ((x / CHUNK_M).floor() as i32, (z / CHUNK_M).floor() as i32)
 }
 
-fn rebuild_on_ready(
+pub fn rebuild_on_ready(
     world: Option<Res<GeneratedWorld>>,
     assets: Option<Res<TreeAssets>>,
     mut index: ResMut<ForestIndex>,
@@ -118,7 +127,7 @@ fn drain_far_queue(
         let mut merged = MeshData::default();
         let mut ultra = MeshData::default();
         for t in trees {
-            let vm = &assets.variants[species_index(t.species)][t.variant as usize];
+            let vm = &assets.variants[assets.slot_of(t.species)][t.variant as usize];
             let pos = Vec3::new(t.x, t.y - 0.25 * t.scale, t.z);
             merged.append_transformed(&vm.lod2_data, pos, t.yaw, t.scale);
             ultra.append_transformed(&vm.billboard_data, pos, t.yaw, t.scale);
@@ -227,13 +236,13 @@ fn stream_near_chunks(
         let mut ents = Vec::new();
         let trees = index.chunks[&key].clone();
         for t in &trees {
-            let vm = &assets.variants[species_index(t.species)][t.variant as usize];
+            let vm = &assets.variants[assets.slot_of(t.species)][t.variant as usize];
             let tf = Transform {
                 translation: Vec3::new(t.x, t.y - 0.25 * t.scale, t.z),
                 rotation: Quat::from_rotation_y(t.yaw),
                 scale: Vec3::splat(t.scale),
             };
-            let bark = assets.bark_mats[species_index(t.species)].clone();
+            let bark = assets.bark_mats[assets.slot_of(t.species)].clone();
             // WED_LOD0FAR=1: diagnostic — full meshes across the whole near ring and
             // NO LOD1 entities at all.
             let lod0far = std::env::var("WED_LOD0FAR").is_ok();

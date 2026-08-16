@@ -1,5 +1,6 @@
 //! Forest placement: deterministic jittered-grid scatter with site-based species mix.
 
+use crate::biome::Biome;
 use crate::heightfield::HeightField;
 use crate::noise::fbm;
 use crate::project::LayerRaster;
@@ -85,7 +86,7 @@ pub fn scatter_rocks(
     water: &[f32],
     seed: u32,
 ) -> Vec<RockInstance> {
-    scatter_rocks_masked(hf, slope, water, seed, &ScatterMasks::default())
+    scatter_rocks_masked(hf, slope, water, seed, Biome::Temperate, &ScatterMasks::default())
 }
 
 /// Mask-aware rock scatter. A `Clearing` mask (`w > 0.5`) suppresses rocks entirely.
@@ -94,6 +95,7 @@ pub fn scatter_rocks_masked(
     slope: &[f32],
     water: &[f32],
     seed: u32,
+    biome: Biome,
     masks: &ScatterMasks,
 ) -> Vec<RockInstance> {
     let ext = hf.extent();
@@ -127,6 +129,12 @@ pub fn scatter_rocks_masked(
             let cluster = fbm(wx / 88.0, wz / 88.0, 3, seed.wrapping_add(77));
             let mut p = 0.012 + smoothstep_f(0.30, 0.85, s) * 0.22;
             p *= 0.35 + smoothstep_f(0.45, 0.75, cluster) * 2.6;
+            // Desert flats need their own interest: with no ground cover to speak of, loose
+            // stone IS the surface detail, and boulder fields at the foot of a scarp are
+            // what sells the mesa above as rock rather than painted terrain.
+            if biome == Biome::Arid {
+                p = p * 1.9 + 0.010 + smoothstep_f(0.55, 1.4, s) * 0.10;
+            }
             // Shore rocks: dry ground within ~1.5 m above a nearby lake surface.
             let shore = neighborhood_water(hf, water, ix, iz);
             if let Some(surf) = shore {
@@ -175,12 +183,17 @@ fn neighborhood_water(hf: &HeightField, water: &[f32], x: usize, z: usize) -> Op
     best.is_finite().then_some(best)
 }
 
-/// Undergrowth prop kinds.
+/// Undergrowth prop kinds. Temperate uses 0–4, arid uses 5–6; the renderer builds only the
+/// meshes its biome can produce, so an unused kind costs nothing.
 pub const PROP_BUSH_BROADLEAF: u8 = 0;
 pub const PROP_BUSH_BIRCH: u8 = 1;
 pub const PROP_LOG: u8 = 2;
 pub const PROP_STUMP: u8 = 3;
 pub const PROP_MUSHROOM: u8 = 4;
+/// Woody desert scrub — the thorny grey-green ball that dots the flats.
+pub const PROP_SCRUB: u8 = 5;
+/// Dry grass tussock — clusters on the riverbank and in wadi floors.
+pub const PROP_TUSSOCK: u8 = 6;
 
 #[derive(Clone, Copy)]
 pub struct PropInstance {
@@ -203,10 +216,13 @@ pub fn scatter_props(
     trails: &[f32],
     p: &ForestParams,
 ) -> Vec<PropInstance> {
-    scatter_props_masked(hf, slope, moisture, water, trails, p, &ScatterMasks::default())
+    scatter_props_masked(
+        hf, slope, moisture, water, trails, p, Biome::Temperate, &ScatterMasks::default(),
+    )
 }
 
 /// Mask-aware prop scatter. A `Clearing` mask (`w > 0.5`) suppresses props entirely.
+#[allow(clippy::too_many_arguments)]
 pub fn scatter_props_masked(
     hf: &HeightField,
     slope: &[f32],
@@ -214,10 +230,13 @@ pub fn scatter_props_masked(
     water: &[f32],
     trails: &[f32],
     p: &ForestParams,
+    biome: Biome,
     masks: &ScatterMasks,
 ) -> Vec<PropInstance> {
     let ext = hf.extent();
-    let spacing = 4.4f32;
+    // Desert ground cover is sparser and its pieces are bigger, so a tighter grid would
+    // only burn CPU on sites that reject.
+    let spacing = if biome == Biome::Arid { 6.0 } else { 4.4 };
     let n = (ext / spacing) as i32;
     let clearing_freq = 1.0 / 260.0;
     let mut out = Vec::new();
@@ -249,25 +268,47 @@ pub fn scatter_props_masked(
                 continue;
             }
             let clearing = fbm(wx * clearing_freq, wz * clearing_freq, 3, p.seed.wrapping_add(555));
-            let thr = 0.40 - 0.25 * p.density;
-            let in_forest = clearing > thr;
-            // Edge band: near the clearing threshold from either side.
-            let edge = 1.0 - ((clearing - thr).abs() / 0.06).min(1.0);
             let m = moisture[i];
-            // Boosted (user: "nie widzę krzaków/grzybów") — undergrowth should be a
-            // constant companion in the woods, not an easter egg.
-            let bush_p = edge * 0.50 + if in_forest { 0.05 } else { 0.055 * m };
-            let log_p = if in_forest { 0.030 } else { 0.0 };
-            let shroom_p = if in_forest && m > 0.30 { 0.065 } else { edge * 0.015 };
-            let r = rng.f32();
-            let kind = if r < bush_p {
-                if rng.chance(0.6) { PROP_BUSH_BROADLEAF } else { PROP_BUSH_BIRCH }
-            } else if r < bush_p + log_p {
-                if rng.chance(0.72) { PROP_LOG } else { PROP_STUMP }
-            } else if r < bush_p + log_p + shroom_p {
-                PROP_MUSHROOM
-            } else {
-                continue;
+            let kind = match biome {
+                Biome::Temperate => {
+                    let thr = 0.40 - 0.25 * p.density;
+                    let in_forest = clearing > thr;
+                    // Edge band: near the clearing threshold from either side.
+                    let edge = 1.0 - ((clearing - thr).abs() / 0.06).min(1.0);
+                    // Boosted (user: "nie widzę krzaków/grzybów") — undergrowth should be a
+                    // constant companion in the woods, not an easter egg.
+                    let bush_p = edge * 0.50 + if in_forest { 0.05 } else { 0.055 * m };
+                    let log_p = if in_forest { 0.030 } else { 0.0 };
+                    let shroom_p = if in_forest && m > 0.30 { 0.065 } else { edge * 0.015 };
+                    let r = rng.f32();
+                    if r < bush_p {
+                        if rng.chance(0.6) { PROP_BUSH_BROADLEAF } else { PROP_BUSH_BIRCH }
+                    } else if r < bush_p + log_p {
+                        if rng.chance(0.72) { PROP_LOG } else { PROP_STUMP }
+                    } else if r < bush_p + log_p + shroom_p {
+                        PROP_MUSHROOM
+                    } else {
+                        continue;
+                    }
+                }
+                Biome::Arid => {
+                    // Scrub grows in drifts, not evenly: the same low-frequency field that
+                    // opens clearings in the forest is reused here as a patchiness mask, so
+                    // the flats get bare stretches worth walking across and thickets worth
+                    // going round — which is the only ground-level interest a desert has.
+                    let drift = smoothstep_f(0.38, 0.72, clearing);
+                    let scrub_p = (0.02 + 0.30 * m) * (0.25 + 1.5 * drift);
+                    // Tussocks are strictly riparian: they mark the water from a distance.
+                    let tussock_p = ((m - 0.46) / 0.4).clamp(0.0, 1.0).powi(2) * 0.55;
+                    let r = rng.f32();
+                    if r < tussock_p {
+                        PROP_TUSSOCK
+                    } else if r < tussock_p + scrub_p {
+                        PROP_SCRUB
+                    } else {
+                        continue;
+                    }
+                }
             };
             out.push(PropInstance {
                 x: wx,
@@ -311,7 +352,9 @@ pub fn scatter(
     trails: &[f32],
     p: &ForestParams,
 ) -> Vec<TreeInstance> {
-    scatter_masked(hf, slope, moisture, water, trails, p, &ScatterMasks::default())
+    scatter_masked(
+        hf, slope, moisture, water, trails, p, Biome::Temperate, &ScatterMasks::default(),
+    )
 }
 
 /// Mask-aware tree scatter.
@@ -322,6 +365,7 @@ pub fn scatter(
 ///
 /// With both masks `None` the result is bit-for-bit identical to the pure scatter (the
 /// density multiplier is exactly 1.0 at the neutral 0.5, and no early-out fires).
+#[allow(clippy::too_many_arguments)]
 pub fn scatter_masked(
     hf: &HeightField,
     slope: &[f32],
@@ -329,8 +373,10 @@ pub fn scatter_masked(
     water: &[f32],
     trails: &[f32],
     p: &ForestParams,
+    biome: Biome,
     masks: &ScatterMasks,
 ) -> Vec<TreeInstance> {
+    let species_table = biome.species();
     let ext = hf.extent();
     let n = (ext / p.spacing) as i32;
     let mut out = Vec::new();
@@ -373,13 +419,27 @@ pub fn scatter_masked(
                 continue;
             }
             // Meadow clearings from low-frequency noise, opened wider at low density.
-            let clearing =
-                fbm(wx * clearing_freq, wz * clearing_freq, 3, p.seed.wrapping_add(555));
-            if clearing < 0.40 - 0.25 * p.density {
-                continue;
+            // Skipped in arid: a desert is not a forest with holes in it — what decides
+            // where an arid tree stands is the water, and that is already in `m`.
+            if biome == Biome::Temperate {
+                let clearing =
+                    fbm(wx * clearing_freq, wz * clearing_freq, 3, p.seed.wrapping_add(555));
+                if clearing < 0.40 - 0.25 * p.density {
+                    continue;
+                }
             }
             // Stocking: denser on moist, gentler ground.
-            let mut stock = p.density * alt_ok * (0.45 + 0.55 * m) * (1.0 - (s / p.max_slope) * 0.5);
+            let mut stock = p.density
+                * biome.density_scale()
+                * alt_ok
+                * (0.45 + 0.55 * m)
+                * (1.0 - (s / p.max_slope) * 0.5);
+            // Arid squares the moisture term on top: the difference between "near the
+            // river" and "not" has to be dramatic, or the oasis dissolves into a haze of
+            // evenly-spread trees and the map stops reading as desert at all.
+            if biome == Biome::Arid {
+                stock *= 0.25 + 3.2 * m * m;
+            }
             // ForestDensity mask: neutral 0.5 ⇒ ×1.0 (no-op, keeps the no-mask path exact);
             // painted up ⇒ up to 2× stocking, painted down ⇒ toward a bare clearing.
             let fw = masks.forest_w(wx, wz, ext);
@@ -388,28 +448,23 @@ pub fn scatter_masked(
                 continue;
             }
 
-            // Site-modified species preference:
-            //   pine   — dry, sandy, ridge sites
-            //   spruce — moist and/or high sites
-            //   beech  — mid-elevation, mesic slopes
-            //   birch  — wet lowland, pioneer in clearings' edges
+            // Site-modified species preference — the per-biome habitat rules live in
+            // `Biome::species_weights_at`; the user's sliders scale them.
             let elev = (h / p.treeline).clamp(0.0, 1.0);
+            let site = biome.species_weights_at(m, elev);
             let w = [
-                p.species_weights[0] * (1.2 - m) * (0.4 + elev),
-                p.species_weights[1] * (0.4 + 0.8 * m) * (0.5 + elev * 0.9),
-                p.species_weights[2] * (0.5 + 0.7 * m) * (1.1 - elev).max(0.05),
-                p.species_weights[3] * (0.3 + m) * (1.0 - elev * 0.6),
+                p.species_weights[0] * site[0],
+                p.species_weights[1] * site[1],
+                p.species_weights[2] * site[2],
+                p.species_weights[3] * site[3],
             ];
             let total: f32 = w.iter().sum();
             if total <= 0.0 {
                 continue;
             }
             let mut pick = rng.f32() * total;
-            let mut species = Species::Pine;
-            for (i, sp) in [Species::Pine, Species::Spruce, Species::Broadleaf, Species::Birch]
-                .into_iter()
-                .enumerate()
-            {
+            let mut species = species_table[0];
+            for (i, sp) in species_table.into_iter().enumerate() {
                 if pick < w[i] {
                     species = sp;
                     break;
@@ -441,12 +496,12 @@ mod tests {
 
     fn world() -> (HeightField, Vec<f32>, Vec<f32>, Vec<f32>) {
         let tp = TerrainParams { size: 256, ..Default::default() };
-        let mut hf = generate_base(&tp, |_| {});
+        let mut hf = generate_base(&tp, crate::biome::TerrainStyle::Mountains, |_| {});
         let ep = ErosionParams { droplets: 8000, ..Default::default() };
         let flow = erode(&mut hf, &ep, 1, |_| {});
         let slope = slope_map(&hf);
         let water = vec![f32::NEG_INFINITY; 256 * 256];
-        let moist = moisture_map(&hf, &flow, &water, 8.0);
+        let moist = moisture_map(&hf, &flow, &water, 8.0, 14.0);
         (hf, slope, moist, water)
     }
 

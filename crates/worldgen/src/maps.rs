@@ -55,7 +55,20 @@ pub fn blur(map: &[f32], size: usize, radius: usize, passes: u32) -> Vec<f32> {
 
 /// Moisture in [0,1]: log-compressed blurred flow + proximity to the global water level
 /// + a blurred halo around detected lakes (shores read lush).
-pub fn moisture_map(hf: &HeightField, flow: &[f32], water: &[f32], water_level: f32) -> Vec<f32> {
+///
+/// `near_band` is how many metres above the water level still count as "near the water
+/// table", and it decides whether the map has a meaningful water table at all. A temperate
+/// landscape effectively does, so its band runs metres deep and the whole lowland reads
+/// damp. A desert does not — the only wet ground is the strip beside the river — and using
+/// the temperate band there soaks the entire basin, which puts riparian palms across the
+/// whole map and destroys the oasis read completely.
+pub fn moisture_map(
+    hf: &HeightField,
+    flow: &[f32],
+    water: &[f32],
+    water_level: f32,
+    near_band: f32,
+) -> Vec<f32> {
     let size = hf.size;
     // Log-compress flow (spans orders of magnitude), then blur to a soil-moisture halo.
     let mut m: Vec<f32> = flow.iter().map(|&f| (1.0 + f).ln()).collect();
@@ -69,7 +82,7 @@ pub fn moisture_map(hf: &HeightField, flow: &[f32], water: &[f32], water_level: 
         for x in 0..size {
             let h = hf.get(x, z);
             // Low ground near the water table is wet regardless of flow.
-            let near_water = ((water_level + 14.0 - h) / 14.0).clamp(0.0, 1.0);
+            let near_water = ((water_level + near_band - h) / near_band).clamp(0.0, 1.0);
             let i = z * size + x;
             m[i] = (m[i] * 1.6 + near_water * 0.6 + lake_halo[i] * 0.7).clamp(0.0, 1.0);
         }
@@ -85,12 +98,12 @@ mod tests {
     #[test]
     fn maps_in_range() {
         let tp = TerrainParams { size: 96, ..Default::default() };
-        let hf = generate_base(&tp, |_| {});
+        let hf = generate_base(&tp, crate::biome::TerrainStyle::Mountains, |_| {});
         let slope = slope_map(&hf);
         assert!(slope.iter().all(|s| s.is_finite() && *s >= 0.0));
         let flow: Vec<f32> = (0..96 * 96).map(|i| (i % 17) as f32).collect();
         let water = vec![f32::NEG_INFINITY; 96 * 96];
-        let moist = moisture_map(&hf, &flow, &water, 10.0);
+        let moist = moisture_map(&hf, &flow, &water, 10.0, 14.0);
         assert!(moist.iter().all(|m| (0.0..=1.0).contains(m)));
     }
 

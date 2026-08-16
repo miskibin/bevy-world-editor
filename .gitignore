@@ -3,3 +3,5 @@
 /assets/textures/bark/
 shot*.png
 *.log
+/shots/
+/--out/

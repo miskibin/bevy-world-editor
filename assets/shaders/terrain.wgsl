@@ -155,20 +155,44 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif
 
     let hq = ter.params2.z > 0.5;
+    // Biome switch. The four texture-array slots keep the same ROLES in both biomes
+    // (0 = dominant flat ground, 1 = rich/low variant, 2 = steep triplanar rock,
+    // 3 = bare trodden earth), so only the weighting rules differ — everything downstream
+    // of this block is shared. `worldgen::export` mirrors these two branches on the CPU;
+    // edit them together or an exported splatmap stops matching what the editor shows.
+    let arid = ter.params2.w > 0.5;
 
     // ── Layer weights ────────────────────────────────────────────────────────────
     let slope = 1.0 - gn.y; // 0 flat … 1 vertical
     let boundary = patch_noise(wp.xz * 0.055) - 0.5; // wobbles every threshold organically
 
-    // Rock: steep faces. Threshold wobbles so the grass/rock line isn't a contour.
-    let rock_w = smoothstep(0.16 + boundary * 0.06, 0.30 + boundary * 0.06, slope);
-    // Dirt: gully floors (high flow) + dry patches; suppressed on rock.
-    let dirt_flow = smoothstep(0.35, 0.75, flow);
-    let dirt_dry = smoothstep(0.25, 0.05, moisture) * smoothstep(0.5, 0.8, patch_noise(wp.xz * 0.013));
-    let dirt_w = clamp(dirt_flow + dirt_dry, 0.0, 1.0) * (1.0 - rock_w);
-    // Forest floor: moist, sheltered ground in noise-broken patches. Threshold kept low —
-    // the litter/moss layer IS the visible forest floor, so it should cover most woods.
-    let ff_w = smoothstep(0.28 + boundary * 0.12, 0.58, moisture) * (1.0 - rock_w) * (1.0 - dirt_w);
+    var rock_w = 0.0;
+    var dirt_w = 0.0;
+    var ff_w = 0.0;
+    if arid {
+        // Sandstone takes the slopes much sooner: the arid landform IS scarps, and loose
+        // sand does not cling to one. A temperate-height threshold leaves cliffs looking
+        // like sand walls.
+        rock_w = smoothstep(0.10 + boundary * 0.05, 0.22 + boundary * 0.05, slope);
+        // Cracked clay: the damp flat by the water. The only "lush" ground the desert
+        // has, so it is keyed on moisture and killed by any slope.
+        dirt_w = smoothstep(0.45 + boundary * 0.10, 0.80, moisture) * (1.0 - rock_w);
+        // Gravel/alluvium follows the washes — where water HAS run, not where it stands.
+        // Flow, not moisture, is what separates the two, and it is what puts a fan of
+        // stones at the mouth of every wadi.
+        ff_w = smoothstep(0.22, 0.62, flow) * (1.0 - rock_w) * (1.0 - dirt_w);
+    } else {
+        // Rock: steep faces. Threshold wobbles so the grass/rock line isn't a contour.
+        rock_w = smoothstep(0.16 + boundary * 0.06, 0.30 + boundary * 0.06, slope);
+        // Dirt: gully floors (high flow) + dry patches; suppressed on rock.
+        let dirt_flow = smoothstep(0.35, 0.75, flow);
+        let dirt_dry =
+            smoothstep(0.25, 0.05, moisture) * smoothstep(0.5, 0.8, patch_noise(wp.xz * 0.013));
+        dirt_w = clamp(dirt_flow + dirt_dry, 0.0, 1.0) * (1.0 - rock_w);
+        // Forest floor: moist, sheltered ground in noise-broken patches. Threshold kept low
+        // — the litter/moss layer IS the visible forest floor, so it should cover most woods.
+        ff_w = smoothstep(0.28 + boundary * 0.12, 0.58, moisture) * (1.0 - rock_w) * (1.0 - dirt_w);
+    }
     let grass_w = max(1.0 - rock_w - dirt_w - ff_w, 0.0);
 
     // ── Albedo ───────────────────────────────────────────────────────────────────
@@ -208,8 +232,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     // Moss films on moist, sheltered grass — noise-broken so it patches, never coats.
-    // Full quality only.
-    if hq {
+    // Full quality only, and never in the desert.
+    if hq && !arid {
     let moss = smoothstep(0.55, 0.85, moisture)
         * smoothstep(0.45, 0.75, patch_noise(wp.xz * 0.11))
         * (grass_w + ff_w)
@@ -219,7 +243,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Fallen-twig litter baked into the forest floor (Warbell twig_field, simplified):
     // one bent, tapered stick per ~1.25 m cell, random position/angle per cell.
-    if hq && ff_w > 0.05 {
+    if hq && !arid && ff_w > 0.05 {
         let tw = twig_field(wp.xz);
         let bark = vec3<f32>(0.26, 0.18, 0.11) * (0.75 + tw.y * 0.5);
         albedo = vec4<f32>(mix(albedo.rgb, bark, min(tw.x * ff_w * 1.2, 1.0)), 1.0);
@@ -252,14 +276,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // never one flat colour (user: "grunt jest zbyt nudny, chcialbym jakies laki").
     let meadow = patch_noise(wp.xz * 0.0075);
     let sward = patch_noise(wp.xz * 0.045);
-    let dry = smoothstep(0.40, 0.72, meadow) * grass_w;
-    let lush = smoothstep(0.62, 0.30, meadow) * grass_w;
-    albedo = vec4<f32>(
-        albedo.rgb
-            * mix(vec3<f32>(1.0), vec3<f32>(1.22, 1.10, 0.66), dry * (0.55 + 0.45 * sward))
-            * mix(vec3<f32>(1.0), vec3<f32>(0.80, 1.06, 0.72), lush * (0.5 + 0.5 * sward)),
-        1.0,
-    );
+    if arid {
+        // The desert equivalent: sand is not one colour over a whole map either. Large
+        // pale bleached drifts against warmer ochre flats, plus a darker "desert varnish"
+        // on the sandstone — without this the flats read as one printed beige sheet, which
+        // is exactly what makes a procedural desert look cheap from an RTS camera.
+        let pale = smoothstep(0.42, 0.74, meadow) * grass_w;
+        let ochre = smoothstep(0.60, 0.28, meadow) * grass_w;
+        let varnish = smoothstep(0.45, 0.80, patch_noise(wp.xz * 0.02)) * rock_w;
+        albedo = vec4<f32>(
+            albedo.rgb
+                * mix(vec3<f32>(1.0), vec3<f32>(1.12, 1.08, 0.98), pale * (0.5 + 0.5 * sward))
+                * mix(vec3<f32>(1.0), vec3<f32>(1.10, 0.92, 0.70), ochre * (0.5 + 0.5 * sward))
+                * mix(vec3<f32>(1.0), vec3<f32>(0.82, 0.74, 0.66), varnish * 0.8),
+            1.0,
+        );
+    } else {
+        let dry = smoothstep(0.40, 0.72, meadow) * grass_w;
+        let lush = smoothstep(0.62, 0.30, meadow) * grass_w;
+        albedo = vec4<f32>(
+            albedo.rgb
+                * mix(vec3<f32>(1.0), vec3<f32>(1.22, 1.10, 0.66), dry * (0.55 + 0.45 * sward))
+                * mix(vec3<f32>(1.0), vec3<f32>(0.80, 1.06, 0.72), lush * (0.5 + 0.5 * sward)),
+            1.0,
+        );
+    }
 
     // Faint large-scale value drift — cures the "one flat green" read at distance.
     let drift = 0.90 + 0.20 * patch_noise(wp.xz * 0.0045);
@@ -325,7 +366,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = n;
 
     // Wet ground darkens + tightens near the water line.
-    let wet = smoothstep(ter.params.z + 1.5, ter.params.z + 0.2, wp.y);
+    //
+    // Temperate keys this on absolute height, which works when the water is lakes at one
+    // global level. A river runs DOWNHILL across the whole map, so an absolute band would
+    // paint the low end soaked and the high end bone dry; arid keys on moisture instead,
+    // which follows the water wherever it actually is.
+    var wet = smoothstep(ter.params.z + 1.5, ter.params.z + 0.2, wp.y);
+    if arid {
+        wet = smoothstep(0.55, 0.92, moisture);
+    }
     pbr_input.material.base_color =
         vec4<f32>(pbr_input.material.base_color.rgb * (1.0 - wet * 0.35), 1.0);
     pbr_input.material.perceptual_roughness =

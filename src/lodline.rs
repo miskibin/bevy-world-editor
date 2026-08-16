@@ -127,16 +127,32 @@ fn spawn_lodline(
     {
         let pz = az + 4.2 * ROW_Z;
         let mut plain_mat: Option<Handle<StandardMaterial>> = None;
-        let items: Vec<(crate::trees_mesh::MeshData, u8)> = vec![
-            (crate::props::bush_data(worldgen::Species::Broadleaf, 11), 0),
-            (crate::props::bush_data(worldgen::Species::Broadleaf, 23), 0),
-            (crate::props::bush_data(worldgen::Species::Birch, 31), 0),
-            (crate::props::bush_data(worldgen::Species::Birch, 47), 0),
-            (crate::props::log_data(5, false), 1),
-            (crate::props::log_data(3, true), 1),
-            (crate::props::mushroom_data(2), 2),
-            (crate::props::mushroom_data(6), 2),
-        ];
+        // The row shows the props the ACTIVE biome can actually scatter — reviewing forest
+        // bushes and toadstools on a desert map would be reviewing meshes that never spawn.
+        let items: Vec<(crate::trees_mesh::MeshData, u8)> = if world.0.biome
+            == worldgen::Biome::Arid
+        {
+            let s = assets.slot_of(worldgen::Species::Tamarisk);
+            vec![
+                (crate::props::clump_data(&crate::props::scrub_shape(s), 11), 0),
+                (crate::props::clump_data(&crate::props::scrub_shape(s), 23), 0),
+                (crate::props::clump_data(&crate::props::tussock_shape(s), 5), 0),
+                (crate::props::clump_data(&crate::props::tussock_shape(s), 17), 0),
+            ]
+        } else {
+            let bl = assets.slot_of(worldgen::Species::Broadleaf);
+            let bi = assets.slot_of(worldgen::Species::Birch);
+            vec![
+                (crate::props::clump_data(&crate::props::bush_shape(bl, false), 11), 0),
+                (crate::props::clump_data(&crate::props::bush_shape(bl, false), 23), 0),
+                (crate::props::clump_data(&crate::props::bush_shape(bi, true), 31), 0),
+                (crate::props::clump_data(&crate::props::bush_shape(bi, true), 47), 0),
+                (crate::props::log_data(5, false), 1),
+                (crate::props::log_data(3, true), 1),
+                (crate::props::mushroom_data(2), 2),
+                (crate::props::mushroom_data(6), 2),
+            ]
+        };
         for (i, (data, kind)) in items.into_iter().enumerate() {
             let mx = ax + i as f32 * 6.5;
             let h = hf.sample_world(mx, pz);

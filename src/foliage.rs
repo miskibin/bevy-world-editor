@@ -1,17 +1,23 @@
 //! Procedural foliage atlas + birch bark — drawn on the CPU at startup, deterministic.
 //!
-//! One 1024² RGBA atlas, four 512² species quadrants (pine, spruce, broadleaf, birch).
-//! Each quadrant: a leaf/needle CLUSTER texture in the top region (alpha-masked cards
-//! sample it) and a 64 px opaque bark strip along the bottom (the LOD2 impostor trunk
-//! samples that, so a whole far tree renders with the single atlas material).
+//! One 2048² RGBA atlas, four 1024² quadrants. Each quadrant: a leaf/needle CLUSTER
+//! texture in the top region (alpha-masked cards sample it) and an opaque bark strip along
+//! the bottom (the LOD2 impostor trunk samples that, so a whole far tree renders with the
+//! single atlas material).
 //!
-//! CC0 bark photos cover pine/broadleaf, but ambientCG has no white birch bark — so the
-//! birch trunk texture is generated here too (white base, dark horizontal lenticels).
+//! **Four quadrants, addressed by SLOT rather than by species.** The generator knows eight
+//! species but a map is one biome, and a biome offers exactly four — so the atlas is built
+//! for the active biome and each species lands in its slot from `Biome::species()`. Growing
+//! the atlas to hold every species instead would quadruple it to 4096² (≈85 MB with mips)
+//! to store four quadrants that the current map can never sample.
+//!
+//! CC0 bark photos cover pine/broadleaf/palm, but ambientCG has no white birch bark — so
+//! the birch trunk texture is generated here too (white base, dark horizontal lenticels).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use worldgen::Species;
+use worldgen::{Biome, Species};
 
 pub const ATLAS: u32 = 2048;
 const Q: u32 = 1024;
@@ -19,26 +25,26 @@ const Q: u32 = 1024;
 pub const LEAF_H: u32 = 928;
 pub const BARK_Y0: u32 = 944;
 
-/// Quadrant origin for a species (pine, spruce, broadleaf, birch → 2×2).
-pub fn quad_origin(sp: Species) -> (u32, u32) {
-    match sp {
-        Species::Pine => (0, 0),
-        Species::Spruce => (Q, 0),
-        Species::Broadleaf => (0, Q),
-        Species::Birch => (Q, Q),
+/// Quadrant origin for an atlas slot (0..4 → 2×2).
+pub fn quad_origin(slot: usize) -> (u32, u32) {
+    match slot & 3 {
+        0 => (0, 0),
+        1 => (Q, 0),
+        2 => (0, Q),
+        _ => (Q, Q),
     }
 }
 
-/// UV rect (u0, v0, u1, v1) of a species' LEAF region.
-pub fn leaf_uv(sp: Species) -> (f32, f32, f32, f32) {
-    let (qx, qy) = quad_origin(sp);
+/// UV rect (u0, v0, u1, v1) of a slot's LEAF region.
+pub fn leaf_uv(slot: usize) -> (f32, f32, f32, f32) {
+    let (qx, qy) = quad_origin(slot);
     let a = ATLAS as f32;
     (qx as f32 / a, qy as f32 / a, (qx + Q) as f32 / a, (qy + LEAF_H) as f32 / a)
 }
 
-/// UV rect of a species' BARK strip.
-pub fn bark_uv(sp: Species) -> (f32, f32, f32, f32) {
-    let (qx, qy) = quad_origin(sp);
+/// UV rect of a slot's BARK strip.
+pub fn bark_uv(slot: usize) -> (f32, f32, f32, f32) {
+    let (qx, qy) = quad_origin(slot);
     let a = ATLAS as f32;
     (qx as f32 / a, (qy + BARK_Y0) as f32 / a, (qx + Q) as f32 / a, (qy + Q) as f32 / a)
 }
@@ -202,6 +208,54 @@ fn cluster_needles(
     }
 }
 
+/// Draw a palm frond: one arching rachis with leaflets combed off both sides.
+///
+/// Procedural rather than photographic because the EZ-Tree leaf set has no palm, and a
+/// frond is the one shape here that a generic leaf cluster cannot stand in for — the
+/// silhouette (a long, narrow, arching comb) IS the species.
+fn cluster_frond(
+    cv: &mut Canvas,
+    qx: u32,
+    qy: u32,
+    rng: &mut worldgen::rng::Rng,
+    base: [f32; 3],
+) {
+    // The card is base-pivoted at the bottom centre and grows upward, matching how
+    // `build_sprigs` orients a card along its branch tangent.
+    let cx = qx as f32 + Q as f32 * 0.5;
+    let cy = qy as f32 + LEAF_H as f32 * 0.97;
+    let len = LEAF_H as f32 * 0.92;
+    let rib = srgb(120, 104, 58);
+    // Slight sideways bow so the frond doesn't read as a ruler.
+    let bow = rng.range(-0.14, 0.14);
+    let pt = |t: f32| {
+        let y = cy - len * t;
+        let x = cx + bow * len * t * t;
+        (x, y)
+    };
+    // Rachis.
+    let steps = 40;
+    for i in 0..steps {
+        let (x0, y0) = pt(i as f32 / steps as f32);
+        let (x1, y1) = pt((i + 1) as f32 / steps as f32);
+        cv.needle(x0, y0, x1, y1, 5.0 * (1.0 - i as f32 / steps as f32) + 1.6, rib);
+    }
+    // Leaflets: long near the middle, short at both ends, angled forward along the rachis.
+    let pairs = 54;
+    for i in 0..pairs {
+        let t = 0.06 + 0.92 * i as f32 / pairs as f32;
+        let (bx, by) = pt(t);
+        // Taper: a frond is widest just past halfway.
+        let taper = (1.0 - (t - 0.55).abs() / 0.55).clamp(0.0, 1.0).powf(0.7);
+        let ll = Q as f32 * 0.20 * taper * rng.range(0.85, 1.15);
+        for side in [-1.0f32, 1.0] {
+            // ~55° off the rachis, swept toward the tip.
+            let a = -std::f32::consts::FRAC_PI_2 + side * (0.95 - 0.25 * t) + rng.signed() * 0.06;
+            cv.needle(bx, by, bx + a.cos() * ll, by + a.sin() * ll, 2.4, jitter(rng, base, 0.14));
+        }
+    }
+}
+
 /// Opaque bark strip: vertical (or horizontal for birch) noise banding.
 fn bark_strip(cv: &mut Canvas, qx: u32, qy: u32, sp: Species, rng: &mut worldgen::rng::Rng) {
     for y in BARK_Y0..Q {
@@ -234,6 +288,34 @@ fn bark_strip(cv: &mut Canvas, qx: u32, qy: u32, sp: Species, rng: &mut worldgen
                     let v = 0.5 + 0.4 * worldgen::noise::vnoise(fx * 0.07, fy * 0.03, 61);
                     [0.38 * v + 0.20, 0.33 * v + 0.18, 0.28 * v + 0.16]
                 }
+                Species::DatePalm => {
+                    // Stacked leaf-scar rings: strong HORIZONTAL banding is the one thing
+                    // that reads "palm" on a trunk at any distance.
+                    let ring = ((fy * 0.16).sin() * 0.5 + 0.5).powf(0.6);
+                    let fibre = worldgen::noise::vnoise(fx * 0.4, fy * 0.05, 23);
+                    let v = 0.45 + ring * 0.35 + fibre * 0.20;
+                    [0.46 * v + 0.16, 0.38 * v + 0.13, 0.26 * v + 0.09]
+                }
+                Species::Acacia => {
+                    // Near-black fissured desert bark.
+                    let crack = worldgen::noise::vnoise(fx * 0.5, fy * 0.05, 88);
+                    let v = 0.30 + 0.35 * worldgen::noise::vnoise(fx * 0.09, fy * 0.03, 17)
+                        - (crack > 0.72) as i32 as f32 * 0.18;
+                    [0.30 * v + 0.09, 0.26 * v + 0.07, 0.22 * v + 0.06]
+                }
+                Species::Tamarisk => {
+                    // Shreddy red-brown strips.
+                    let strip = worldgen::noise::vnoise(fx * 0.55, fy * 0.02, 55);
+                    let v = 0.40 + 0.45 * strip;
+                    [0.44 * v + 0.14, 0.30 * v + 0.10, 0.24 * v + 0.08]
+                }
+                Species::DeadTree => {
+                    // Sun-bleached silver-grey, splitting along the grain.
+                    let split = worldgen::noise::vnoise(fx * 0.6, fy * 0.015, 71);
+                    let v = 0.62 + 0.30 * worldgen::noise::vnoise(fx * 0.08, fy * 0.03, 39)
+                        - (split > 0.78) as i32 as f32 * 0.35;
+                    [v * 0.72 + 0.12, v * 0.70 + 0.11, v * 0.66 + 0.10]
+                }
             };
             let _ = rng;
             cv.blend((qx + x) as i32, (qy + y) as i32, col, 1.0);
@@ -243,25 +325,36 @@ fn bark_strip(cv: &mut Canvas, qx: u32, qy: u32, sp: Species, rng: &mut worldgen
 
 /// The photographic sprig source for a species (EZ-Tree leaf textures, MIT — see
 /// assets/textures/MANIFEST.md). Spruce reuses the pine spray; its vertex tint darkens it.
-fn sprig_file(sp: Species) -> &'static str {
-    match sp {
+fn sprig_file(sp: Species) -> Option<&'static str> {
+    Some(match sp {
         Species::Pine | Species::Spruce => "assets/textures/leaves/pineL.png",
         Species::Broadleaf => "assets/textures/leaves/oakL.png",
         Species::Birch => "assets/textures/leaves/aspenL.png",
-    }
+        // Ash is pinnate — a row of small leaflets on a stem — which is exactly an
+        // acacia's foliage habit, so the photographic sprig carries straight over.
+        Species::Acacia => "assets/textures/leaves/ashL.png",
+        // Tamarisk foliage is fine and feathery; the conifer spray reads correctly once
+        // the vertex tint takes it grey-green.
+        Species::Tamarisk => "assets/textures/leaves/pineL.png",
+        // A frond has no stand-in: drawn procedurally by `cluster_frond`.
+        Species::DatePalm => return None,
+        // Bare by definition — only the bark strip of its quadrant is ever sampled.
+        Species::DeadTree => return None,
+    })
 }
 
 /// Build the full foliage atlas image. Preferred path: composite the photographic twig
 /// cutouts (a REAL sprig — visible stem + individually recognizable leaves + gaps — is
 /// what makes a card read as foliage; painted blobs never do). Fallback if the files are
 /// missing: the old procedural clusters.
-pub fn build_atlas() -> Image {
+pub fn build_atlas(biome: Biome) -> Image {
     let mut cv = Canvas::new();
     let mut rng = worldgen::rng::Rng::new(0x0F01_1A6E);
 
-    for sp in worldgen::ALL_SPECIES {
-        let (qx, qy) = quad_origin(sp);
-        let blitted = image::open(crate::texload::resolve(sprig_file(sp)))
+    for (slot, sp) in biome.species().into_iter().enumerate() {
+        let (qx, qy) = quad_origin(slot);
+        let blitted = sprig_file(sp)
+            .and_then(|f| image::open(crate::texload::resolve(f)).ok())
             .map(|img| {
                 let img = image::imageops::resize(
                     &img.to_rgba8(),
@@ -274,9 +367,11 @@ pub fn build_atlas() -> Image {
                     cv.px[i..i + 4].copy_from_slice(&p.0);
                 }
             })
-            .is_ok();
-        if !blitted {
-            bevy::log::warn!("sprig texture missing ({}) — procedural fallback", sprig_file(sp));
+            .is_some();
+        if !blitted && sp.has_foliage() {
+            if let Some(f) = sprig_file(sp) {
+                bevy::log::warn!("sprig texture missing ({f}) — procedural fallback");
+            }
             match sp {
                 Species::Pine => cluster_needles(
                     &mut cv, qx, qy, &mut rng, 7, (52.0, 80.0), 2.1, srgb(68, 106, 60),
@@ -290,6 +385,15 @@ pub fn build_atlas() -> Image {
                 Species::Birch => cluster_leaves(
                     &mut cv, qx, qy, &mut rng, 170, (44.0, 68.0), srgb(116, 152, 64),
                 ),
+                // Always procedural — see `cluster_frond`.
+                Species::DatePalm => cluster_frond(&mut cv, qx, qy, &mut rng, srgb(96, 122, 58)),
+                Species::Acacia => cluster_leaves(
+                    &mut cv, qx, qy, &mut rng, 150, (38.0, 60.0), srgb(104, 122, 72),
+                ),
+                Species::Tamarisk => cluster_needles(
+                    &mut cv, qx, qy, &mut rng, 8, (30.0, 48.0), 2.6, srgb(112, 126, 92),
+                ),
+                Species::DeadTree => {}
             }
         }
         bark_strip(&mut cv, qx, qy, sp, &mut rng);

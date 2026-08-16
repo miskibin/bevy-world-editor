@@ -209,7 +209,7 @@ mod tests {
 
     fn eroded() -> (HeightField, Vec<f32>) {
         let tp = TerrainParams { size: 128, ..Default::default() };
-        let mut hf = generate_base(&tp, |_| {});
+        let mut hf = generate_base(&tp, crate::biome::TerrainStyle::Mountains, |_| {});
         let ep = ErosionParams { droplets: 4000, ..Default::default() };
         let flow = erode(&mut hf, &ep, 42, |_| {});
         thermal(&mut hf, &ep, |_| {});
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn erosion_actually_changes_terrain() {
         let tp = TerrainParams { size: 128, ..Default::default() };
-        let base = generate_base(&tp, |_| {});
+        let base = generate_base(&tp, crate::biome::TerrainStyle::Mountains, |_| {});
         let (hf, flow) = eroded();
         let diff: f32 = base.h.iter().zip(&hf.h).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff > 1.0, "erosion did nothing, diff={diff}");
