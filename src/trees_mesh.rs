@@ -133,6 +133,22 @@ fn wood_tint(sp: Species, var: usize) -> [f32; 3] {
     }
 }
 
+/// Does one leaf card represent a whole organ rather than a twig sprig? See the LOD note
+/// in `build_sprigs` — this is what disqualifies a species from card thinning.
+fn whole_organ_cards(sp: Species) -> bool {
+    matches!(sp, Species::DatePalm)
+}
+
+/// Upload a leaf mesh, or `None` if there are no cards at all.
+///
+/// A leafless species (DeadTree) otherwise produces a mesh with zero vertices and zero
+/// indices. Bevy still allocates it in the mesh slab, and the allocator then logs
+/// `Use-after-free: attempted to copy element data for an unallocated key` once per empty
+/// mesh — 16 errors a frame on an arid map. Never hand it an empty mesh.
+fn leaf_mesh(md: MeshData, meshes: &mut Assets<Mesh>) -> Option<Handle<Mesh>> {
+    (!md.positions.is_empty()).then(|| meshes.add(md.to_mesh()))
+}
+
 fn ortho_frame(d: Vec3) -> (Vec3, Vec3) {
     let helper = if d.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
     let u = d.cross(helper).normalize();
@@ -204,12 +220,20 @@ fn tube(md: &mut MeshData, seg: &Segment, sides: u32, bark_uv: Option<(f32, f32,
 /// centre — so hundreds of flat cards light as one soft volume.
 fn build_sprigs(
     sk: &TreeSkeleton,
+    sp: Species,
     slot: usize,
     every: usize,
     size_mul: f32,
     crossed: bool,
     tint: [f32; 3],
 ) -> MeshData {
+    // LOD thinning trades cards for size: drop two in three and enlarge the survivors so
+    // the crown keeps its mass. That is only valid while a card is a small twig among
+    // hundreds. When a card is a WHOLE ORGAN — a palm frond, of which a tree has ~16 —
+    // dropping two thirds strips the crown bare and the compensating ×1.75/×2.6 inflates
+    // what is left, so the tree visibly GROWS as it recedes. Whole-organ species keep
+    // every card at native size at every LOD; they are cheap enough that it doesn't matter.
+    let (every, size_mul) = if whole_organ_cards(sp) { (1, 1.0) } else { (every, size_mul) };
     let mut md = MeshData::default();
     let region = foliage::leaf_uv(slot);
     let canopy = Vec3::from_array(sk.canopy_center);
@@ -297,7 +321,7 @@ fn build_lod2(sk: &TreeSkeleton, sp: Species, slot: usize, var: usize) -> MeshDa
         md.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     let every = (sk.leaves.len() / 11).max(1);
-    let leaves = build_sprigs(sk, slot, every, 2.6, false, foliage_tint(sp, var));
+    let leaves = build_sprigs(sk, sp, slot, every, 2.6, false, foliage_tint(sp, var));
     let base = md.positions.len() as u32;
     md.positions.extend_from_slice(&leaves.positions);
     md.normals.extend_from_slice(&leaves.normals);
@@ -309,9 +333,10 @@ fn build_lod2(sk: &TreeSkeleton, sp: Species, slot: usize, var: usize) -> MeshDa
 
 pub struct VariantMeshes {
     pub lod0_wood: Handle<Mesh>,
-    pub lod0_leaf: Handle<Mesh>,
+    /// `None` for a leafless species — see `leaf_mesh`.
+    pub lod0_leaf: Option<Handle<Mesh>>,
     pub lod1_wood: Handle<Mesh>,
-    pub lod1_leaf: Handle<Mesh>,
+    pub lod1_leaf: Option<Handle<Mesh>>,
     pub lod2: Handle<Mesh>,
     /// CPU copy of the LOD2 mesh — the far-field per-chunk merge source.
     pub lod2_data: MeshData,
@@ -546,13 +571,13 @@ fn build_tree_assets(
             let wt = wood_tint(sp, var);
             per_variant.push(VariantMeshes {
                 lod0_wood: meshes.add(build_wood(&sk, 6, 2, None, wt).to_mesh()),
-                lod0_leaf: meshes.add(build_sprigs(&sk, slot, 1, 1.0, true, ft).to_mesh()),
+                lod0_leaf: leaf_mesh(build_sprigs(&sk, sp, slot, 1, 1.0, true, ft), &mut meshes),
                 lod1_wood: meshes.add(build_wood(&sk, 4, 1, None, wt).to_mesh()),
                 // CROSSED cards are non-negotiable at this ring: single quads vanish
                 // edge-on, so whole crowns went transparent at grazing angles (the
                 // see-through-forest artifact). Every-3rd + upsized keeps the quad
                 // budget near the old every-2nd uncrossed count.
-                lod1_leaf: meshes.add(build_sprigs(&sk, slot, 3, 1.75, true, ft).to_mesh()),
+                lod1_leaf: leaf_mesh(build_sprigs(&sk, sp, slot, 3, 1.75, true, ft), &mut meshes),
                 lod2: meshes.add(lod2_data.to_mesh()),
                 lod2_data,
                 billboard_data: build_billboard(&sk, sp, slot, ft),

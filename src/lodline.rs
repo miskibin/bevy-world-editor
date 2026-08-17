@@ -89,12 +89,14 @@ fn spawn_lodline(
                         tf,
                         WorldEntity,
                     ));
-                    commands.spawn((
-                        Mesh3d(vm.lod0_leaf.clone()),
-                        MeshMaterial3d(assets.leaf_mat.clone()),
-                        tf,
-                        WorldEntity,
-                    ));
+                    if let Some(leaf) = vm.lod0_leaf.clone() {
+                        commands.spawn((
+                            Mesh3d(leaf),
+                            MeshMaterial3d(assets.leaf_mat.clone()),
+                            tf,
+                            WorldEntity,
+                        ));
+                    }
                 }
                 1 => {
                     commands.spawn((
@@ -103,12 +105,14 @@ fn spawn_lodline(
                         tf,
                         WorldEntity,
                     ));
-                    commands.spawn((
-                        Mesh3d(vm.lod1_leaf.clone()),
-                        MeshMaterial3d(assets.leaf_mat.clone()),
-                        tf,
-                        WorldEntity,
-                    ));
+                    if let Some(leaf) = vm.lod1_leaf.clone() {
+                        commands.spawn((
+                            Mesh3d(leaf),
+                            MeshMaterial3d(assets.leaf_mat.clone()),
+                            tf,
+                            WorldEntity,
+                        ));
+                    }
                 }
                 _ => {
                     commands.spawn((

@@ -146,6 +146,13 @@ fn spawn_on_ready(
     if !world.is_changed() {
         return;
     }
+    // The fauna is a temperate-forest set — deer herds, songbird flocks, meadow
+    // butterflies. On a desert map they are simply the wrong animals, and a 1.4 m deer
+    // beside a palm from an RTS camera reads as a scale error rather than as wildlife.
+    // An arid biome gets none until it has its own species.
+    if world.0.biome == worldgen::Biome::Arid {
+        return;
+    }
     // Part meshes + the one shared vertex-colour material, built once.
     let assets = match assets {
         Some(a) => a.clone_inner(),

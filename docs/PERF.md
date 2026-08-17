@@ -43,13 +43,16 @@ vsync off, 1088 m map:
 
 | Pose | ms (median) | fps |
 |---|---|---|
-| rts-close (22 m zoom) | 6.06 | 165 |
-| rts-mid (60 m) | 5.69 | 176 |
-| rts-far (130 m) | 5.35 | 187 |
-| rts-river (oasis) | 5.87 | 170 |
+| rts-close (22 m zoom) | 7.47 | 134 |
+| rts-mid (60 m) | 7.28 | 137 |
+| rts-far (130 m) | 6.27 | 159 |
+| rts-river (oasis) | 6.10 | 164 |
 
-Peak working set **593 MB**. Σ GPU passes ≈ 1.3 ms against a ~5.7 ms frame, so this is
-still CPU-bound — the remaining budget is in systems, not shaders.
+Peak working set **593 MB**. Σ GPU passes ≈ 2 ms against a ~7 ms frame, so this is still
+CPU-bound — the remaining budget is in systems, not shaders.
+
+(An earlier pass measured 5.35–6.06 ms by also dropping the shadow map to 2048. That
+flickered visibly and was reverted — see below.)
 
 **An RTS camera is a different perf problem from a fly-cam, and most of the win is in
 admitting that.** It cannot stand on the ground and it cannot climb to 260 m, so:
@@ -59,8 +62,21 @@ admitting that.** It cannot stand on the ground and it cannot climb to 260 m, so
 - Grass builds nothing above 48 m of eye height and shrinks its ring below that — from a
   map view a blade is sub-pixel, and building those chunk meshes was one of the streamer's
   larger per-frame costs. Arid skips grass entirely (dry tussocks are scattered props).
-- Shadow cascades 4×4096 over 700 m → 3×2048 over 280 m. Shorter is both faster AND
-  sharper here: the unused cascade range was pure wasted resolution.
+- Shadow cascades 4→3 and their reach 700 m → 280 m. Shorter is both faster AND sharper:
+  the unused cascade range was pure wasted resolution. **The map stays at 4096** — halving
+  it to 2048 saved ~1.4 ms and made shadow edges crawl and flicker as the camera panned,
+  because the cascades still span hundreds of metres. Cut cascade DISTANCE, not resolution.
+- A cull distance may only move where the thing is already too small to see. Scaling the
+  grass ring's RADIUS with camera height (rather than just switching it off past 48 m)
+  pulled it in as you zoomed and deleted grass from the middle of the screen while the
+  player watched.
+- LOD card thinning (drop 2 in 3, enlarge the rest) is only valid while a card is a small
+  twig. A palm's card is a whole FROND, so thinning stripped the crown and the compensating
+  ×1.75/×2.6 inflated the remainder — the tree grew as it receded. `whole_organ_cards`
+  opts a species out.
+- Never upload an empty mesh: a leafless species produced a zero-vertex leaf mesh, and the
+  mesh slab allocator logged `Use-after-free: attempted to copy element data for an
+  unallocated key` once per empty mesh, 16 a frame.
 - DoF and god rays off, supersampling back to native. Not a quality cut so much as a
   re-allocation — those effects are aimed at a camera standing in the scene.
 

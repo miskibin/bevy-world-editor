@@ -133,7 +133,12 @@ fn apply_preset(
 
     gfx.ssaa = if rts { 1.0 } else { 1.35 };
     rays.enabled = !rts;
-    shadow_map.size = if rts { 2048 } else { 4096 };
+    // Shadow map stays at 4096 in BOTH modes. Dropping it to 2048 looked like a free
+    // saving and was not: the cascades still span hundreds of metres, so halving the
+    // resolution quadrupled the texel footprint and the shadow edges crawled and flickered
+    // as the camera panned. The cascade DISTANCE below is the real saving here, and it
+    // makes shadows sharper rather than blurrier.
+    shadow_map.size = 4096;
     for mut d in &mut dof {
         d.max_radius = if rts { 0.0 } else { 2.5 };
     }

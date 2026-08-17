@@ -265,19 +265,23 @@ fn stream_near_chunks(
                     ))
                     .id(),
             );
-            ents.push(
-                commands
-                    .spawn((
-                        Mesh3d(vm.lod0_leaf.clone()),
-                        MeshMaterial3d(assets.leaf_mat.clone()),
-                        tf,
-                        WorldEntity,
-                        NoCpuCulling,
-                        NearTree,
-                        range(0.0, lod0_end),
-                    ))
-                    .id(),
-            );
+            // Leafless species (dead wood) carry no leaf mesh at all — see
+            // `trees_mesh::leaf_mesh`. Two fewer entities per tree, as a bonus.
+            if let Some(leaf) = vm.lod0_leaf.clone() {
+                ents.push(
+                    commands
+                        .spawn((
+                            Mesh3d(leaf),
+                            MeshMaterial3d(assets.leaf_mat.clone()),
+                            tf,
+                            WorldEntity,
+                            NoCpuCulling,
+                            NearTree,
+                            range(0.0, lod0_end),
+                        ))
+                        .id(),
+                );
+            }
             if lod0far {
                 continue;
             }
@@ -294,22 +298,24 @@ fn stream_near_chunks(
                     ))
                     .id(),
             );
-            ents.push(
-                commands
-                    .spawn((
-                        Mesh3d(vm.lod1_leaf.clone()),
-                        MeshMaterial3d(assets.leaf_mat.clone()),
-                        tf,
-                        WorldEntity,
-                        NoCpuCulling,
-                        NearTree,
-                        // Shadow casting only from the LOD0 ring — the mid-ring canopy
-                        // shadow pass was a large chunk of the 17-fps regression.
-                        NotShadowCaster,
-                        range(lod0_end, LOD1_END),
-                    ))
-                    .id(),
-            );
+            if let Some(leaf) = vm.lod1_leaf.clone() {
+                ents.push(
+                    commands
+                        .spawn((
+                            Mesh3d(leaf),
+                            MeshMaterial3d(assets.leaf_mat.clone()),
+                            tf,
+                            WorldEntity,
+                            NoCpuCulling,
+                            NearTree,
+                            // Shadow casting only from the LOD0 ring — the mid-ring canopy
+                            // shadow pass was a large chunk of the 17-fps regression.
+                            NotShadowCaster,
+                            range(lod0_end, LOD1_END),
+                        ))
+                        .id(),
+                );
+            }
         }
         index.live.insert(key, ents);
     }

@@ -83,20 +83,19 @@ fn stream_grass(
     *last_run = 0.0;
 
     let cp = cam.translation;
-    // Shrink (and eventually switch off) the grass ring by EYE HEIGHT.
+    // Switch the grass ring off by EYE HEIGHT — but do NOT scale it down on the way there.
     //
-    // A blade is ~0.3 m tall. From 20 m up it is already a couple of pixels; past ~48 m it
-    // is sub-pixel and contributes nothing but aliasing — yet building those chunk meshes
-    // is one of the streamer's biggest per-frame costs. An RTS camera spends most of its
-    // life above that line, so this is close to a free win there while leaving the ground
-    // level view (where grass is the whole point) untouched.
+    // A blade is ~0.3 m tall, so past ~48 m up it is sub-pixel and contributes nothing but
+    // aliasing, while its chunk meshes are one of the streamer's biggest per-frame costs.
+    // Skipping it above that line is nearly free.
+    //
+    // Scaling the RADIUS with height (the first attempt) is NOT: it pulls the ring in
+    // towards the camera as you zoom out, so whole chunks of grass vanish from the middle
+    // of the screen while you watch. A cull distance may only ever move where the thing is
+    // already too small to see — never across ground the player is looking at.
     let off = crate::genrun::world_offset(&world.0.height);
     let eye = (cp.y - world.0.height.sample_world(cp.x - off, cp.z - off)).max(0.0);
-    let ring = if eye >= GRASS_MAX_EYE {
-        0.0
-    } else {
-        RING * (1.0 - eye / GRASS_MAX_EYE).max(0.18)
-    };
+    let ring = if eye >= GRASS_MAX_EYE { 0.0 } else { RING };
     let r_chunks = (ring / CHUNK_M).ceil() as i32 + 1;
     let centre = ((cp.x / CHUNK_M).floor() as i32, (cp.z / CHUNK_M).floor() as i32);
 
