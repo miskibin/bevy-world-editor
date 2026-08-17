@@ -165,10 +165,15 @@ fn stream_grass(
 
 /// One merged tuft mesh per chunk; None if the chunk grows nothing.
 fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
-    // No turf in the desert. The moisture gate below would already thin it to the
-    // riverbank, but a green sward is the wrong plant there anyway — dry tussocks do that
-    // job as scattered props, and skipping the whole grass streamer is a real saving on a
-    // map where it would only ever cover a thin ribbon.
+    // No turf in the desert.
+    //
+    // Tried and reverted: letting it grow on the riverbank and the oasis patches looked
+    // like a large frame-time regression in profiling, though that run was contended by
+    // another GPU application so the number is not trustworthy. It was dropped anyway on
+    // the argument alone — those are precisely the chunks where nearly every site passes,
+    // so the ring fills with dense alpha-masked blade meshes viewed at a grazing angle,
+    // which is the worst case for overdraw. The desert's green is carried by the ground
+    // tint (`terrain.wgsl`, arid branch), dry tussock props and clustered tree groves.
     if w.biome == worldgen::Biome::Arid {
         return None;
     }
@@ -202,6 +207,9 @@ fn build_grass_chunk(w: &worldgen::World, key: (i32, i32)) -> Option<Mesh> {
             // dense, flower-speckled swards vs ordinary short turf.
             let meadow = worldgen::noise::fbm(wx / 135.0, wz / 135.0, 2, 777);
             let meadowness = ((meadow - 0.45) / 0.25).clamp(0.0, 1.0);
+            // NB `WATER_LEVEL` here is a hardcoded 5 m and only holds for temperate maps —
+            // if grass is ever enabled for a biome whose water sits elsewhere, this floor
+            // has to come from the world, not a constant.
             if w.water[i].is_finite()
                 || w.slope[i] > 0.55
                 || w.trails[i] > 0.35

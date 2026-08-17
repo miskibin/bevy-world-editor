@@ -90,6 +90,43 @@ pub fn moisture_map(
     m
 }
 
+/// Isolated damp patches away from the river — the oases and green hollows that keep an
+/// arid map from being one river and nothing else.
+///
+/// Returned as a 0..1 field to be MAXed into moisture, so everything keyed on moisture —
+/// ground splat, grass, props, tree species and stocking — agrees about where the green is
+/// without any of them knowing that oases exist.
+///
+/// Two terms: sparse low-frequency blobs (hard-thresholded, so they are distinct patches
+/// and not a gradient), biased toward local hollows, because a depression is where water
+/// would actually collect.
+pub fn oasis_field(hf: &HeightField, seed: u32) -> Vec<f32> {
+    use crate::noise::{fbm, smoothstep};
+    let size = hf.size;
+    // Local relief: height minus a wide blur of it. Negative = a hollow.
+    let relief = blur(&hf.h, size, 12, 2);
+    let mut out = vec![0.0f32; size * size];
+    for z in 0..size {
+        for x in 0..size {
+            let i = z * size + x;
+            let (wx, wz) = (x as f32 * hf.cell, z as f32 * hf.cell);
+            // ~150 m blobs. The high, narrow threshold is what makes them patches.
+            let blob = fbm(wx / 150.0, wz / 150.0, 3, seed.wrapping_add(911));
+            let patch = smoothstep(0.58, 0.74, blob);
+            if patch <= 0.0 {
+                continue;
+            }
+            // The hollow bias SHADES a patch, it must not gate it: at a 0.30 floor only
+            // patches that happened to land in a depression ever got wet enough to read
+            // green, so most of them were invisible.
+            let hollow = smoothstep(2.5, -3.0, hf.h[i] - relief[i]);
+            out[i] = patch * (0.58 + 0.42 * hollow);
+        }
+    }
+    // Soften the rims so a patch fades into the sand instead of ending on a contour.
+    blur(&out, size, 4, 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

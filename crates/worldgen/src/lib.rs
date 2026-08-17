@@ -215,13 +215,23 @@ pub fn build_world_from_base(
     }
     progress(0.80, "derived maps");
     let slope = maps::slope_map(&height);
-    let moisture = maps::moisture_map(
+    let mut moisture = maps::moisture_map(
         &height,
         &base.flow,
         &ws.surface,
         p.forest.water_level,
         p.biome.moisture_band(),
     );
+    // Oases: damp patches away from the water, MAXed into moisture so every downstream
+    // consumer (splat, grass, props, species choice, stocking) finds them on its own. A
+    // desert whose only green is one river reads as a single corridor with dead space
+    // either side; the patches are what give the rest of the map somewhere to go.
+    if p.biome.has_oases() {
+        let oasis = maps::oasis_field(&height, p.terrain.seed);
+        for (m, o) in moisture.iter_mut().zip(&oasis) {
+            *m = m.max(*o);
+        }
+    }
 
     // 3. Trails, then max-combine painted PathWear masks so hand-painted paths repel scatter.
     progress(0.84, "trails");

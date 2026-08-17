@@ -159,6 +159,13 @@ impl Biome {
         matches!(self, Biome::Arid)
     }
 
+    /// Does this biome scatter isolated damp patches away from its water? See
+    /// [`crate::maps::oasis_field`]. Temperate has no need — its moisture is already
+    /// spread over the whole map.
+    pub fn has_oases(self) -> bool {
+        matches!(self, Biome::Arid)
+    }
+
     /// Metres above the water level that still count as damp ground — see
     /// [`crate::maps::moisture_map`]. This single number is what makes a desert a desert:
     /// widen it and the oasis smears out into a green map with sand-coloured textures.

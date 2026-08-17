@@ -174,9 +174,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // sand does not cling to one. A temperate-height threshold leaves cliffs looking
         // like sand walls.
         rock_w = smoothstep(0.10 + boundary * 0.05, 0.22 + boundary * 0.05, slope);
-        // Cracked clay: the damp flat by the water. The only "lush" ground the desert
-        // has, so it is keyed on moisture and killed by any slope.
-        dirt_w = smoothstep(0.45 + boundary * 0.10, 0.80, moisture) * (1.0 - rock_w);
+        // Cracked clay: the damp pan right AT the water. Threshold kept high on purpose —
+        // the clay texture is pinkish, so letting it spread over the oasis patches (which
+        // start around 0.4 moisture) paints them salmon instead of green.
+        dirt_w = smoothstep(0.70 + boundary * 0.08, 0.92, moisture) * (1.0 - rock_w);
         // Gravel/alluvium follows the washes — where water HAS run, not where it stands.
         // Flow, not moisture, is what separates the two, and it is what puts a fan of
         // stones at the mouth of every wadi.
@@ -289,6 +290,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 * mix(vec3<f32>(1.0), vec3<f32>(1.12, 1.08, 0.98), pale * (0.5 + 0.5 * sward))
                 * mix(vec3<f32>(1.0), vec3<f32>(1.10, 0.92, 0.70), ochre * (0.5 + 0.5 * sward))
                 * mix(vec3<f32>(1.0), vec3<f32>(0.82, 0.74, 0.66), varnish * 0.8),
+            1.0,
+        );
+        // Oasis green. Damp ground in a desert is not merely damp-coloured — it is the
+        // only green on the map, and from an RTS camera that has to live in the GROUND
+        // colour: individual plants are a few pixels there, so grass tufts and scrub can't
+        // carry the read on their own. Broken up by the sward noise so a patch has an
+        // organic edge rather than a moisture contour.
+        let verdant = smoothstep(0.36, 0.66, moisture) * (1.0 - rock_w) * (0.65 + 0.45 * sward);
+        albedo = vec4<f32>(
+            mix(albedo.rgb, albedo.rgb * vec3<f32>(0.46, 0.86, 0.34), clamp(verdant, 0.0, 1.0) * 0.9),
             1.0,
         );
     } else {

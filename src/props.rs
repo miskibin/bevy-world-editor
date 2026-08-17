@@ -15,7 +15,18 @@ use crate::genrun::{GeneratedWorld, WorldEntity, world_offset};
 use crate::trees_mesh::{MeshData, TreeAssets};
 
 const CHUNK_M: f32 = 64.0;
-const PROP_FAR: f32 = 280.0;
+/// Distance cull for merged prop chunks.
+///
+/// 650, not the old 280. Two things make a short cull show badly from an RTS camera:
+/// props are merged per 64 m chunk and measured to the chunk's AABB CENTRE, so a whole
+/// 64 m block of scrub winks out at once; and at a shallow zoom the TOP of the screen is
+/// looking hundreds of metres out, far past 280 m. Panning therefore deleted vegetation
+/// in plain sight along the top edge.
+///
+/// The cost of raising it is draw calls, not entities — one merged mesh per chunk, and
+/// the frustum still culls everything behind you. 650 also lines up with where the tree
+/// tiers hand over to billboards, so the whole vegetation set fades out together.
+const PROP_FAR: f32 = 650.0;
 
 pub struct PropsPlugin;
 

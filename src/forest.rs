@@ -308,9 +308,11 @@ fn stream_near_chunks(
                             WorldEntity,
                             NoCpuCulling,
                             NearTree,
-                            // Shadow casting only from the LOD0 ring — the mid-ring canopy
-                            // shadow pass was a large chunk of the 17-fps regression.
-                            NotShadowCaster,
+                            // NB: this tier DOES cast shadows now. Restricting casting to
+                            // the LOD0 ring meant a tree lost its canopy shadow the moment
+                            // it crossed the LOD0/LOD1 line — so panning made shadows blink
+                            // out one tree at a time, read as "shadow flicker". Affordable
+                            // because the RTS preset's cascades only reach 280 m.
                             range(lod0_end, LOD1_END),
                         ))
                         .id(),

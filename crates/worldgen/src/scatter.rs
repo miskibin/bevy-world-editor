@@ -439,6 +439,12 @@ pub fn scatter_masked(
             // evenly-spread trees and the map stops reading as desert at all.
             if biome == Biome::Arid {
                 stock *= 0.25 + 3.2 * m * m;
+                // Groves, not a sprinkle. Desert trees stand in clumps around whatever
+                // water there is, and an evenly-thinned scatter is the one thing that
+                // makes procedural vegetation look procedural. ~45 m field: wide enough
+                // to hold a stand of several trees, tight enough for several per oasis.
+                let grove = fbm(wx / 45.0, wz / 45.0, 2, p.seed.wrapping_add(3121));
+                stock *= 0.20 + 2.0 * smoothstep_f(0.40, 0.72, grove);
             }
             // ForestDensity mask: neutral 0.5 ⇒ ×1.0 (no-op, keeps the no-mask path exact);
             // painted up ⇒ up to 2× stocking, painted down ⇒ toward a bare clearing.
