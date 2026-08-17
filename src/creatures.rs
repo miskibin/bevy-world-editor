@@ -408,11 +408,15 @@ fn spawn_on_ready(
             }
         }
     }
+    // NB the counts come from the constants, not literals: this line used to hardcode
+    // "4 flocks" and `.min(8)`/`.min(20)`, so after the cluster counts were raised it
+    // cheerfully reported the old numbers and looked like the change had not taken.
     info!(
-        "creatures: {} sites -> 4 flocks, {} herd sites, {} meadows",
+        "creatures: {} sites -> {} flocks, {} herds, {} butterfly sites",
         sites.len(),
-        herd_sites.len().min(8),
-        meadows.len().min(20)
+        FLOCKS,
+        herd_sites.len().min(HERDS),
+        meadows.len().min(BUTTERFLY_SITES)
     );
     // Staging aid: world-space coords to frame a shot at.
     if let Some(s) = herd_sites.first() {
