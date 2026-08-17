@@ -105,17 +105,47 @@ pub fn build_trails(
     // in under this on every seed — the two constants only mean anything together.
     const FORD_DEPTH: f32 = 1.1;
     let mut cost = vec![1.0f32; side * side];
+    let wet_at = |cx: usize, cz: usize| -> bool {
+        let i = (cz * COARSE + COARSE / 2) * size + cx * COARSE + COARSE / 2;
+        water[i].is_finite()
+    };
     for cz in 0..side {
         for cx in 0..side {
             let i = (cz * COARSE + COARSE / 2) * size + cx * COARSE + COARSE / 2;
             let depth = if water[i].is_finite() { water[i] - hf.h[i] } else { -1.0 };
-            cost[cz * side + cx] = if depth > FORD_DEPTH {
+            let mut c = if depth > FORD_DEPTH {
                 1.0e6
             } else if depth > 0.0 {
                 25.0 + depth * 20.0
             } else {
                 1.0 + slope[i] * 40.0
             };
+            // **Penalise dry ground that merely RUNS ALONGSIDE water.**
+            //
+            // Making shallow water crossable (above) had an unintended second effect: the
+            // strip beside a river is flat, so once the river stopped being a wall the
+            // cheapest route between two distant points became "hug the bank". Trails then
+            // painted a hard-edged worn ribbon down the whole length of the river, which is
+            // the "unnatural lines by the water" report.
+            //
+            // A local penalty fixes it without touching fords: a crossing pays it for two
+            // or three cells, while running parallel pays it the whole way.
+            if depth <= 0.0 {
+                let near = (-2i32..=2).any(|dz| {
+                    (-2i32..=2).any(|dx| {
+                        let (nx, nz) = (cx as i32 + dx, cz as i32 + dz);
+                        nx >= 0
+                            && nz >= 0
+                            && (nx as usize) < side
+                            && (nz as usize) < side
+                            && wet_at(nx as usize, nz as usize)
+                    })
+                });
+                if near {
+                    c += 8.0;
+                }
+            }
+            cost[cz * side + cx] = c;
         }
     }
 

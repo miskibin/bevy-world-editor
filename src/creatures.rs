@@ -94,6 +94,15 @@ struct Bird {
 /// each butterfly site 4 insects. Raised (4/8/20 → 7/14/26) on the "more animal clusters"
 /// ask: the previous numbers left a 512 m map feeling empty between the groups, and the
 /// per-group cost is small next to the vegetation.
+/// Extra size on every animal, for READABILITY not realism.
+///
+/// The meshes are already at true scale — a deer stands ~1.3 m at the shoulder, which is a
+/// red deer, and someone previously raised it from roe-size for exactly this reason. But
+/// true scale against a 12 m palm from an RTS camera makes an animal a few pixels tall and
+/// it stops registering as wildlife at all. RTS games routinely oversize units for the same
+/// reason. Drop this to 1.0 for a physically honest scene.
+const CREATURE_SCALE: f32 = 1.7;
+
 const FLOCKS: usize = 7;
 const HERDS: usize = 14;
 const BUTTERFLY_SITES: usize = 26;
@@ -247,7 +256,7 @@ fn spawn_on_ready(
                 .spawn((
                     Mesh3d(assets.bird_body.clone()),
                     MeshMaterial3d(assets.feather.clone()),
-                    Transform::from_translation(centre).with_scale(Vec3::splat(1.45)),
+                    Transform::from_translation(centre).with_scale(Vec3::splat(1.45 * CREATURE_SCALE)),
                     WorldEntity,
                     DayCreature,
                     Bird {
@@ -298,7 +307,9 @@ fn spawn_on_ready(
                 spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
                 spawn_part(&mut commands, &assets.fur, assets.deer_leg.clone()),
             ];
-            let scale = rng.range(1.30, 1.55); // red-deer stature — roe-sized reads toy-like under 25 m pines
+            // Red-deer stature (roe-sized read toy-like under 25 m pines), times the RTS
+            // readability factor.
+            let scale = rng.range(1.30, 1.55) * CREATURE_SCALE;
             let deer = commands
                 .spawn((
                     Mesh3d(assets.deer_body.clone()),
@@ -347,7 +358,8 @@ fn spawn_on_ready(
                 .spawn((
                     Mesh3d(assets.fly_body.clone()),
                     MeshMaterial3d(assets.mat.clone()),
-                    Transform::from_xyz(mx + off, y, mz + off),
+                    Transform::from_xyz(mx + off, y, mz + off)
+                        .with_scale(Vec3::splat(CREATURE_SCALE)),
                     WorldEntity,
                     DayCreature,
                     Butterfly {

@@ -116,12 +116,15 @@ const SHADOW_FAR_RTS: f32 = 280.0;
 /// instead is the shadow work that actually reads from above.
 ///
 /// `WED_RTS_FULLGFX=1` disables the coupling for A/B comparisons.
+#[allow(clippy::too_many_arguments)]
 fn apply_preset(
     mode: Res<CamMode>,
     mut gfx: ResMut<crate::ui::GfxSettings>,
     mut rays: ResMut<crate::godrays::GodRaySettings>,
+    mut atmo: ResMut<crate::atmospherics::AtmoSettings>,
     mut shadow_map: ResMut<bevy::light::DirectionalLightShadowMap>,
     mut dof: Query<&mut crate::dof::Dof>,
+    mut fog: Query<&mut DistanceFog, With<Camera3d>>,
     mut cascades: Query<&mut bevy::light::CascadeShadowConfig, With<DirectionalLight>>,
     mut applied: Local<Option<CamMode>>,
 ) {
@@ -133,6 +136,23 @@ fn apply_preset(
 
     gfx.ssaa = if rts { 1.0 } else { 1.35 };
     rays.enabled = !rts;
+
+    // Haze, dialled well back for the map view.
+    //
+    // The cinematic settings are tuned for a camera standing IN the landscape looking at a
+    // kilometre of it, where aerial perspective is the depth cue. An RTS camera looks at a
+    // few hundred metres of a 512 m map, so the same haze just lays a beige veil over the
+    // thing you are trying to read — and the further half of the map is permanently milky.
+    // Visibility more than doubles and the post-pass drops to a third.
+    gfx.visibility = if rts { 3600.0 } else { 1400.0 };
+    atmo.strength = if rts { 0.35 } else { 1.0 };
+    for mut f in &mut fog {
+        f.falloff = FogFalloff::from_visibility_colors(
+            gfx.visibility,
+            Color::srgb(0.42, 0.48, 0.55),
+            Color::srgb(0.68, 0.76, 0.88),
+        );
+    }
     // Shadow map stays at 4096 in BOTH modes. Dropping it to 2048 looked like a free
     // saving and was not: the cascades still span hundreds of metres, so halving the
     // resolution quadrupled the texel footprint and the shadow edges crawled and flickered

@@ -111,9 +111,9 @@ pub fn carve(hf: &mut HeightField, flow: &[f32], p: &RiverParams, seed: u32) -> 
         return River { water, course: Vec::new(), surface: Vec::new() };
     }
 
-    // 3. Smooth away the 8-direction staircase, then resample to ~1 m steps so the stamp
-    //    below leaves no gaps on diagonals.
-    let course = resample(&smooth(&cells, hf.cell), 1.0);
+    // 3. Smooth away the 8-direction staircase, bend the result into a sinuous line, then
+    //    resample to ~1 m steps so the stamp below leaves no gaps on diagonals.
+    let course = resample(&meander(&smooth(&cells, hf.cell), seed), 1.0);
     if course.len() < 8 {
         return River { water, course, surface: Vec::new() };
     }
@@ -223,6 +223,49 @@ pub fn carve(hf: &mut HeightField, flow: &[f32], p: &RiverParams, seed: u32) -> 
     }
 
     River { water, course, surface }
+}
+
+/// Push the course sideways with low-frequency noise, so it snakes.
+///
+/// Needed because two upstream stages produce dead-straight reaches: `extend_to_border`
+/// walks a straight heading whenever the trace stalls inland, and a flat arid basin gives
+/// the droplet sim so little to follow that the trace stalls often. The result reads as a
+/// canal dug with a ruler — perfectly parallel banks — which is what "unnatural lines by
+/// the river" turned out to mean.
+///
+/// The displacement is perpendicular to the local heading and tapered to zero at both ends,
+/// so the mouths stay welded to the map border (guarantee #2).
+fn meander(pts: &[(f32, f32)], seed: u32) -> Vec<(f32, f32)> {
+    let n = pts.len();
+    if n < 8 {
+        return pts.to_vec();
+    }
+    // Two octaves: a long swing plus a shorter wobble, so the sinuosity itself isn't
+    // periodic. Amplitudes in metres.
+    const LONG_A: f32 = 26.0;
+    const SHORT_A: f32 = 7.0;
+    (0..n)
+        .map(|i| {
+            let (x, z) = pts[i];
+            // Local heading from the neighbours, so the offset is a true normal.
+            let a = pts[i.saturating_sub(3)];
+            let b = pts[(i + 3).min(n - 1)];
+            let (dx, dz) = (b.0 - a.0, b.1 - a.1);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 1e-4 {
+                return (x, z);
+            }
+            let (nx, nz) = (-dz / len, dx / len);
+            let t = i as f32;
+            let swing = fbm(t / 120.0, 0.0, 1, seed.wrapping_add(1777)) - 0.5;
+            let wobble = fbm(t / 38.0, 11.0, 2, seed.wrapping_add(2531)) - 0.5;
+            // Taper: 0 at both ends, 1 across the middle.
+            let u = i as f32 / (n - 1) as f32;
+            let taper = (u * (1.0 - u) * 4.0).clamp(0.0, 1.0).powf(0.6);
+            let off = (swing * 2.0 * LONG_A + wobble * 2.0 * SHORT_A) * taper;
+            (x + nx * off, z + nz * off)
+        })
+        .collect()
 }
 
 /// Moving average over a 1-D profile, window `±w`, shrinking at the ends.

@@ -222,11 +222,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if trail > 0.01 {
         let ragged = trail * (0.80 + 0.4 * patch_noise(wp.xz * 0.9));
         let lane = smoothstep(0.18, 0.62, ragged);
-        let dirt = sample_planar(3, wp);
+        // Which layer a beaten lane wears down TO. Temperate: bare earth (slot 3). Arid:
+        // gravel (slot 1) — slot 3 there is a pinkish clay pan, so a desert track painted
+        // itself salmon, which is not a colour any path has ever been.
+        var lane_layer = 3;
+        if arid {
+            lane_layer = 1;
+        }
+        let dirt = sample_planar(lane_layer, wp);
         // Dusty but NOT flat: fine gravel grain re-sampled at ~0.8 m keeps the beaten
         // lane readable up close (a plain brightened dirt sample smeared into beige).
         let g =
-            textureSampleBias(albedo_arr, albedo_samp, wp.xz * ter.params.x * 5.2 + 0.87, 3, -1.75)
+            textureSampleBias(albedo_arr, albedo_samp, wp.xz * ter.params.x * 5.2 + 0.87, lane_layer, -1.75)
                 .rgb;
         let grain = 0.6 + 0.8 * dot(g, vec3<f32>(0.299, 0.587, 0.114));
         albedo = mix(albedo, dirt * vec4<f32>(1.10 * grain, 1.04 * grain, 0.94 * grain, 1.0), lane);
