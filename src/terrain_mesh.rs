@@ -244,6 +244,33 @@ fn build_water_chunk(
         }
         best
     };
+    // Per-CORNER surface height, so the sheet is one continuous surface.
+    //
+    // A lake is level, so a per-cell height was invisible on one. A RIVER descends along
+    // its course, and then a per-cell constant turns the water into a staircase of flat
+    // grid tiles with a step at every cell edge — reading as unnatural straight lines
+    // along the bank, axis-aligned because the grid is. Averaging the touching cells makes
+    // neighbouring quads share corner heights, and it agrees across chunk borders too
+    // because it is computed from the global grid. (Same class of bug as `corner_shore`.)
+    let corner_surf = |gx: usize, gz: usize| -> f32 {
+        let mut sum = 0.0f32;
+        let mut n = 0.0f32;
+        for (cx, cz) in [
+            (gx.wrapping_sub(1), gz.wrapping_sub(1)),
+            (gx, gz.wrapping_sub(1)),
+            (gx.wrapping_sub(1), gz),
+            (gx, gz),
+        ] {
+            if cx < size && cz < size {
+                let v = w.water[cz * size + cx];
+                if v.is_finite() {
+                    sum += v;
+                    n += 1.0;
+                }
+            }
+        }
+        if n > 0.0 { sum / n } else { f32::NEG_INFINITY }
+    };
     // Per-CORNER shore distance (average of the 4 touching cells, dry = 0) — a per-cell
     // constant here is what painted the foam as zigzag cell blocks.
     let corner_shore = |gx: usize, gz: usize| -> f32 {
@@ -283,8 +310,12 @@ fn build_water_chunk(
                 let gz = z + dz;
                 let wx = gx as f32 * hf.cell + off;
                 let wz = gz as f32 * hf.cell + off;
-                let depth = (surf - hf.get(gx, gz)).max(0.0);
-                positions.push([wx, surf, wz]);
+                // Corner height, falling back to the cell's own surface at the very rim
+                // where no touching cell is wet.
+                let cs = corner_surf(gx, gz);
+                let cs = if cs.is_finite() { cs } else { surf };
+                let depth = (cs - hf.get(gx, gz)).max(0.0);
+                positions.push([wx, cs, wz]);
                 normals.push([0.0, 1.0, 0.0]);
                 uv0.push([wx, wz]);
                 uv1.push([depth, corner_shore(gx, gz)]);

@@ -212,6 +212,21 @@ fn poll_gen(
             world.height.size,
             world.height.size
         );
+        // A world-space sample of open water — the staging aid for aiming a shot at the
+        // river, which is otherwise a guessing game (the trail samples below do the same
+        // job for paths).
+        {
+            let hf = &world.height;
+            let o = world_offset(hf);
+            let mid = hf.size / 2;
+            if let Some(i) = (0..hf.size * hf.size)
+                .filter(|i| world.water[*i].is_finite())
+                .min_by_key(|i| (i / hf.size).abs_diff(mid) + (i % hf.size).abs_diff(mid))
+            {
+                let (wx, wz) = ((i % hf.size) as f32 * hf.cell, (i / hf.size) as f32 * hf.cell);
+                info!("water sample at world ({:.0}, {:.0})", wx + o, wz + o);
+            }
+        }
         // WED_EYE="x,z,h,tx,tz[,th]": eye at terrain height + h over WORLD-space (x,z)
         // — the map is centred on the origin, so x/z run -extent/2 .. +extent/2 —
         // looking at terrain height + th (default h) over (tx,tz). Pass a smaller `th`

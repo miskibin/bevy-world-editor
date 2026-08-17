@@ -49,9 +49,15 @@ const ULTRA_START: f32 = 620.0;
 /// AABB centre — so equal thresholds leave a band (up to half a chunk wide) where a tree
 /// is past its own cutoff but its chunk hasn't started: trees vanish at distance. The
 /// overlap costs a little double-draw in the band and is the only robust fix.
-// Aligned EXACTLY with the last per-tree tier's end — a gap makes trees vanish in the
-// ring between, an overlap double-draws it.
-const MERGED_START: f32 = LOD1_END;
+///
+/// The margin is half a chunk's DIAGONAL (64 m × √2 ÷ 2 ≈ 45 m), which is the worst case:
+/// a tree in the far corner of its chunk is that much further out than the chunk centre
+/// the merged mesh is measured by. Anything less leaves a ring where trees wink out.
+///
+/// (This constant WAS set equal to `LOD1_END`, directly contradicting the paragraph above
+/// — which is exactly the "trees vanish while still on screen" report that sent me back
+/// here. If you are tempted to align them again, read the first paragraph.)
+const MERGED_START: f32 = LOD1_END - 46.0;
 
 pub struct ForestPlugin;
 

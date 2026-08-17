@@ -88,6 +88,16 @@ struct Bird {
     ground_off: Vec2,
 }
 
+/// How many animal groups populate a map.
+///
+/// These are CLUSTER counts, not head counts — each flock is 7 birds, each herd 3–5 deer,
+/// each butterfly site 4 insects. Raised (4/8/20 → 7/14/26) on the "more animal clusters"
+/// ask: the previous numbers left a 512 m map feeling empty between the groups, and the
+/// per-group cost is small next to the vegetation.
+const FLOCKS: usize = 7;
+const HERDS: usize = 14;
+const BUTTERFLY_SITES: usize = 26;
+
 #[derive(Component)]
 struct DayCreature; // hidden after dusk (birds roost, butterflies land)
 
@@ -146,13 +156,10 @@ fn spawn_on_ready(
     if !world.is_changed() {
         return;
     }
-    // The fauna is a temperate-forest set — deer herds, songbird flocks, meadow
-    // butterflies. On a desert map they are simply the wrong animals, and a 1.4 m deer
-    // beside a palm from an RTS camera reads as a scale error rather than as wildlife.
-    // An arid biome gets none until it has its own species.
-    if world.0.biome == worldgen::Biome::Arid {
-        return;
-    }
+    // NB the fauna is a temperate-forest set (deer, songbirds, meadow butterflies) and it
+    // spawns on arid maps too, by request. Ecologically that is wrong — a desert wants
+    // camels, goats and vultures — so treat the desert herds as placeholders until the
+    // arid biome has its own species, not as a statement that deer live there.
     // Part meshes + the one shared vertex-colour material, built once.
     let assets = match assets {
         Some(a) => a.clone_inner(),
@@ -216,7 +223,7 @@ fn spawn_on_ready(
             .map(|s| (s.x, s.z))
     });
     flocks.0.clear();
-    for f in 0..4 {
+    for f in 0..FLOCKS {
         let (mx, mz) = match (f, pin) {
             (0, Some(p)) => p,
             _ => (rng.range(ext * 0.2, ext * 0.8), rng.range(ext * 0.2, ext * 0.8)),
@@ -277,7 +284,7 @@ fn spawn_on_ready(
             *slot = first_meadow;
         }
     }
-    for site in herd_sites.iter().take(8) {
+    for site in herd_sites.iter().take(HERDS) {
         let n = 3 + (rng.next_u32() % 3) as usize;
         for k in 0..n {
             let mx = site.x + rng.range(-6.0, 6.0);
@@ -326,7 +333,7 @@ fn spawn_on_ready(
         .iter()
         .filter(|s| matches!(s.kind, worldgen::SiteKind::Meadow))
         .collect();
-    for site in meadows.iter().take(20) {
+    for site in meadows.iter().take(BUTTERFLY_SITES) {
         for _ in 0..4 {
             let mx = site.x + rng.range(-8.0, 8.0);
             let mz = site.z + rng.range(-8.0, 8.0);
